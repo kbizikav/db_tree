@@ -1,17 +1,2 @@
-pub mod db_tree;
-pub mod node_tree;
-
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub mod merkle_tree;
+pub mod mock_db;

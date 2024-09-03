@@ -10,3 +10,5 @@ plonky2 = { git="https://github.com/InternetMaximalism/polygon-plonky2.git", bra
 intmax2-zkp = {git ="https://github.com/InternetMaximalism/intmax2-zkp", branch = "dev"}
 anyhow = "1.0.86"
 hashbrown = "0.14.5"
+serde_json = "1.0.127"
+serde = "1.0.209"
