@@ -34,8 +34,8 @@ impl<V: Leafable> MerkleTree<V> {
             mock_db.insert(
                 new_h,
                 Node {
-                    left: Some(h.clone()),
-                    right: Some(h.clone()),
+                    left: h.clone(),
+                    right: h.clone(),
                 },
             );
             h = new_h;
@@ -92,13 +92,6 @@ impl<V: Leafable> MerkleTree<V> {
 
         let mut h = leaf_hash;
         self.node_hashes.insert(path.clone(), h.clone()); // leaf node
-        mock_db.insert(
-            h.clone(),
-            Node {
-                left: None,
-                right: None,
-            },
-        );
 
         while !path.is_empty() {
             let sibling = self.get_sibling_hash(&path);
@@ -110,8 +103,8 @@ impl<V: Leafable> MerkleTree<V> {
             };
             self.node_hashes.insert(path.clone(), new_h.clone());
             let node = Node {
-                left: if b { Some(sibling) } else { Some(h.clone()) },
-                right: if b { Some(h.clone()) } else { Some(sibling) },
+                left: if b { sibling } else { h.clone() },
+                right: if b { h.clone() } else { sibling },
             };
             mock_db.insert(new_h.clone(), node);
             h = new_h;
@@ -144,9 +137,9 @@ impl<V: Leafable> MerkleTree<V> {
         while !path.is_empty() {
             let node = mock_db.get(hash).expect("cannot find node");
             let (child, sibling) = if path.pop().unwrap() {
-                (node.right.unwrap(), node.left.unwrap())
+                (node.right, node.left)
             } else {
-                (node.left.unwrap(), node.right.unwrap())
+                (node.left, node.right)
             };
             siblings.push(sibling);
             hash = child;

@@ -3,8 +3,8 @@ use intmax2_zkp::utils::{leafable::Leafable, leafable_hasher::LeafableHasher};
 
 #[derive(Clone, Debug)]
 pub struct Node<V: Leafable> {
-    pub left: Option<<V::LeafableHasher as LeafableHasher>::HashOut>,
-    pub right: Option<<V::LeafableHasher as LeafableHasher>::HashOut>,
+    pub left: <V::LeafableHasher as LeafableHasher>::HashOut,
+    pub right: <V::LeafableHasher as LeafableHasher>::HashOut,
 }
 
 #[derive(Clone, Debug)]
