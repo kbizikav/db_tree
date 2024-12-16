@@ -1,2 +1,2 @@
-pub mod merkle_tree;
-pub mod mock_db;
+// pub mod merkle_tree;
+pub mod node_db;

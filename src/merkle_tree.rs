@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use intmax2_zkp::utils::{leafable::Leafable, leafable_hasher::LeafableHasher};
 
-use crate::mock_db::{MockDB, Node};
+use crate::node_db::{MockDB, Node};
 
 // `MekleTree`` is a structure of Merkle Tree used for `MerkleTreeWithLeaves`
 // and `SparseMerkleTreeWithLeaves`. It only holds non-zero nodes.
@@ -235,7 +235,7 @@ pub fn usize_le_bits(num: usize, length: usize) -> Vec<bool> {
 mod test {
     use intmax2_zkp::utils::{leafable::Leafable, poseidon_hash_out::PoseidonHashOut};
 
-    use crate::{merkle_tree::usize_le_bits, mock_db::MockDB};
+    use crate::{merkle_tree::usize_le_bits, node_db::MockDB};
 
     use super::MerkleTree;
 
