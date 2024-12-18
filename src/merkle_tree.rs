@@ -1,88 +1,68 @@
-use std::collections::HashMap;
-
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use intmax2_zkp::utils::{leafable::Leafable, leafable_hasher::LeafableHasher};
+use sqlx::PgPool;
 
-use crate::node_db::{MockDB, Node};
+use crate::EnvVar;
 
-// `MekleTree`` is a structure of Merkle Tree used for `MerkleTreeWithLeaves`
-// and `SparseMerkleTreeWithLeaves`. It only holds non-zero nodes.
-// All nodes are specified by path: Vec<bool>. The path is big endian.
-// Note that this is different from the original plonky2 Merkle Tree which
-// uses little endian path.
+// use crate::node_db::{MockDB, Node};
+
 #[derive(Clone, Debug)]
 pub struct MerkleTree<V: Leafable> {
     height: usize,
-    node_hashes: HashMap<Vec<bool>, <V::LeafableHasher as LeafableHasher>::HashOut>,
     zero_hashes: Vec<<V::LeafableHasher as LeafableHasher>::HashOut>,
+    pool: PgPool,
 }
 
 impl<V: Leafable> MerkleTree<V> {
-    pub fn new(
-        mock_db: &mut MockDB<V>,
-        height: usize,
-        empty_leaf_hash: <V::LeafableHasher as LeafableHasher>::HashOut,
-    ) -> Self {
-        // zero_hashes = reverse([H(zero_leaf), H(H(zero_leaf), H(zero_leaf)), ...])
-        let mut zero_hashes = vec![];
-        let mut h = empty_leaf_hash;
-        zero_hashes.push(h.clone());
-        for _ in 0..height {
-            let new_h = <V::LeafableHasher as LeafableHasher>::two_to_one(h, h);
-            zero_hashes.push(new_h);
-            mock_db.insert(
-                new_h,
-                Node {
-                    left: h.clone(),
-                    right: h.clone(),
-                },
-            );
-            h = new_h;
-        }
-        zero_hashes.reverse();
+    // pub async fn new(
+    //     height: usize,
+    //     empty_leaf_hash: <V::LeafableHasher as LeafableHasher>::HashOut,
+    // ) -> anyhow::Result<Self> {
+    //     let env = envy::from_env::<EnvVar>().unwrap();
+    //     let pool = PgPool::connect(&env.database_url).await?;
 
-        let node_hashes: HashMap<Vec<bool>, <V::LeafableHasher as LeafableHasher>::HashOut> =
-            HashMap::new();
+    //     // zero_hashes = reverse([H(zero_leaf), H(H(zero_leaf), H(zero_leaf)), ...])
+    //     let mut zero_hashes = vec![];
+    //     let mut h = empty_leaf_hash;
+    //     zero_hashes.push(h.clone());
 
-        Self {
-            height,
-            node_hashes,
-            zero_hashes,
-        }
-    }
+    //     let mut tx = pool.begin().await?;
+    //     for _ in 0..height {
+    //         let new_h = <V::LeafableHasher as LeafableHasher>::two_to_one(h, h);
+    //         zero_hashes.push(new_h);
+    //         sqlx::query!(
+    //             r#"
+    //             INSERT INTO hash_nodes (parent_hash, left_hash, right_hash)
+    //             VALUES ($1, $2, $3)
+    //             ON CONFLICT (parent_hash) DO NOTHING
+    //             "#,
+    //             bincode::serialize(&new_h)? as _,
+    //             bincode::serialize(&h)? as _,
+    //             bincode::serialize(&h)? as _
+    //         )
+    //         .execute(tx.as_mut())
+    //         .await?;
+
+    //         h = new_h;
+    //     }
+    //     tx.commit().await?;
+    //     zero_hashes.reverse();
+
+    //     Ok(Self {
+    //         height,
+    //         zero_hashes,
+    //         pool,
+    //     })
+    // }
 
     pub fn height(&self) -> usize {
         self.height
     }
 
-    pub fn get_node_hash(
-        &self,
-        path: &Vec<bool>,
-    ) -> <V::LeafableHasher as LeafableHasher>::HashOut {
-        assert!(path.len() <= self.height);
-        match self.node_hashes.get(path) {
-            Some(h) => h.clone(),
-            None => self.zero_hashes[path.len()].clone(),
-        }
-    }
-
-    pub fn get_root(&self) -> <V::LeafableHasher as LeafableHasher>::HashOut {
-        self.get_node_hash(&vec![])
-    }
-
-    fn get_sibling_hash(&self, path: &Vec<bool>) -> <V::LeafableHasher as LeafableHasher>::HashOut {
-        assert!(!path.is_empty());
-        let mut path = path.clone();
-        let last = path.len() - 1;
-        path[last] = !path[last];
-        self.get_node_hash(&path)
-    }
-
     // index_bits is little endian
     pub fn update_leaf(
         &mut self,
-        mock_db: &mut MockDB<V>,
         index_bits: Vec<bool>,
         leaf_hash: <V::LeafableHasher as LeafableHasher>::HashOut,
     ) {
@@ -91,7 +71,6 @@ impl<V: Leafable> MerkleTree<V> {
         path.reverse(); // path is big endian
 
         let mut h = leaf_hash;
-        self.node_hashes.insert(path.clone(), h.clone()); // leaf node
 
         while !path.is_empty() {
             let sibling = self.get_sibling_hash(&path);
@@ -111,42 +90,42 @@ impl<V: Leafable> MerkleTree<V> {
         }
     }
 
-    pub fn prove(&self, index_bits: Vec<bool>) -> MerkleProof<V> {
-        assert_eq!(index_bits.len(), self.height);
-        let mut path = index_bits;
-        path.reverse(); // path is big endian
+    // pub fn prove(&self, index_bits: Vec<bool>) -> MerkleProof<V> {
+    //     assert_eq!(index_bits.len(), self.height);
+    //     let mut path = index_bits;
+    //     path.reverse(); // path is big endian
 
-        let mut siblings = vec![];
-        while !path.is_empty() {
-            siblings.push(self.get_sibling_hash(&path));
-            path.pop();
-        }
-        MerkleProof { siblings }
-    }
+    //     let mut siblings = vec![];
+    //     while !path.is_empty() {
+    //         siblings.push(self.get_sibling_hash(&path));
+    //         path.pop();
+    //     }
+    //     MerkleProof { siblings }
+    // }
 
-    pub fn prove_with_given_root(
-        &self,
-        mock_db: &MockDB<V>,
-        root: <V::LeafableHasher as LeafableHasher>::HashOut,
-        index_bits: Vec<bool>,
-    ) -> MerkleProof<V> {
-        assert_eq!(index_bits.len(), self.height);
-        let mut path = index_bits;
-        let mut siblings = vec![];
-        let mut hash = root;
-        while !path.is_empty() {
-            let node = mock_db.get(hash).expect("cannot find node");
-            let (child, sibling) = if path.pop().unwrap() {
-                (node.right, node.left)
-            } else {
-                (node.left, node.right)
-            };
-            siblings.push(sibling);
-            hash = child;
-        }
-        siblings.reverse();
-        MerkleProof { siblings }
-    }
+    // pub fn prove_with_given_root(
+    //     &self,
+    //     mock_db: &MockDB<V>,
+    //     root: <V::LeafableHasher as LeafableHasher>::HashOut,
+    //     index_bits: Vec<bool>,
+    // ) -> MerkleProof<V> {
+    //     assert_eq!(index_bits.len(), self.height);
+    //     let mut path = index_bits;
+    //     let mut siblings = vec![];
+    //     let mut hash = root;
+    //     while !path.is_empty() {
+    //         let node = mock_db.get(hash).expect("cannot find node");
+    //         let (child, sibling) = if path.pop().unwrap() {
+    //             (node.right, node.left)
+    //         } else {
+    //             (node.left, node.right)
+    //         };
+    //         siblings.push(sibling);
+    //         hash = child;
+    //     }
+    //     siblings.reverse();
+    //     MerkleProof { siblings }
+    // }
 }
 
 #[derive(Clone, Debug)]
@@ -231,40 +210,40 @@ pub fn usize_le_bits(num: usize, length: usize) -> Vec<bool> {
     result
 }
 
-#[cfg(test)]
-mod test {
-    use intmax2_zkp::utils::{leafable::Leafable, poseidon_hash_out::PoseidonHashOut};
+// #[cfg(test)]
+// mod test {
+//     use intmax2_zkp::utils::{leafable::Leafable, poseidon_hash_out::PoseidonHashOut};
 
-    use crate::{merkle_tree::usize_le_bits, node_db::MockDB};
+//     use crate::{merkle_tree::usize_le_bits, node_db::MockDB};
 
-    use super::MerkleTree;
+//     use super::MerkleTree;
 
-    type Leaf = u32;
+//     type Leaf = u32;
 
-    #[test]
-    fn test_prove_with_given_root() {
-        let height = 32;
+//     #[test]
+//     fn test_prove_with_given_root() {
+//         let height = 32;
 
-        let mut mock_db = MockDB::<Leaf>::new();
-        let empty_leaf_hash = PoseidonHashOut::hash_inputs_u32(&[]);
-        let mut merkle_tree = MerkleTree::new(&mut mock_db, height, empty_leaf_hash);
+//         let mut mock_db = MockDB::<Leaf>::new();
+//         let empty_leaf_hash = PoseidonHashOut::hash_inputs_u32(&[]);
+//         let mut merkle_tree = MerkleTree::new(&mut mock_db, height, empty_leaf_hash);
 
-        for i in 0..10 {
-            let leaf = i as u32;
-            let index_bits = super::usize_le_bits(i, height);
-            merkle_tree.update_leaf(&mut mock_db, index_bits, leaf.hash());
-        }
-        let root1 = merkle_tree.get_root();
-        for i in 10..20 {
-            let leaf_hash = PoseidonHashOut::hash_inputs_u32(&[i as u32]);
-            let index_bits = usize_le_bits(i, height);
-            merkle_tree.update_leaf(&mut mock_db, index_bits, leaf_hash);
-        }
-        let index = 6;
-        let leaf = index as u32;
-        let index_bits = super::usize_le_bits(index, height);
-        let proof = merkle_tree.prove_with_given_root(&mock_db, root1, index_bits.clone());
-        let root1_expected = proof.get_root(&leaf, index_bits);
-        assert_eq!(root1, root1_expected);
-    }
-}
+//         for i in 0..10 {
+//             let leaf = i as u32;
+//             let index_bits = super::usize_le_bits(i, height);
+//             merkle_tree.update_leaf(&mut mock_db, index_bits, leaf.hash());
+//         }
+//         let root1 = merkle_tree.get_root();
+//         for i in 10..20 {
+//             let leaf_hash = PoseidonHashOut::hash_inputs_u32(&[i as u32]);
+//             let index_bits = usize_le_bits(i, height);
+//             merkle_tree.update_leaf(&mut mock_db, index_bits, leaf_hash);
+//         }
+//         let index = 6;
+//         let leaf = index as u32;
+//         let index_bits = super::usize_le_bits(index, height);
+//         let proof = merkle_tree.prove_with_given_root(&mock_db, root1, index_bits.clone());
+//         let root1_expected = proof.get_root(&leaf, index_bits);
+//         assert_eq!(root1, root1_expected);
+//     }
+// }
