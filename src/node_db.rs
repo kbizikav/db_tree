@@ -99,4 +99,11 @@ impl<V: Leafable> NodeDB<V> {
         }
         Ok(leaf_hashes)
     }
+
+    pub async fn reset(&self) -> anyhow::Result<()> {
+        sqlx::query!("TRUNCATE current_leaf_hashes")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }

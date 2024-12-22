@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT position, leaf_hash\n            FROM current_leaf_hashes\n            ORDER BY position\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "position",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "leaf_hash",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "6f86dd12699e5c5ba9402bdbeb92066b08c548d006d6294adbeda386520dbab3"
+}

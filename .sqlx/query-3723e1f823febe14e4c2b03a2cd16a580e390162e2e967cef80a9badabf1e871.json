@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO current_leaf_hashes (position, leaf_hash)\n            VALUES ($1, $2)\n            ON CONFLICT (position) DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3723e1f823febe14e4c2b03a2cd16a580e390162e2e967cef80a9badabf1e871"
+}

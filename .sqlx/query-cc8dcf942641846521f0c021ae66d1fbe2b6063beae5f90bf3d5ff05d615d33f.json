@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO hash_nodes (parent_hash, left_hash, right_hash)\n            VALUES ($1, $2, $3)\n            ON CONFLICT (parent_hash) DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cc8dcf942641846521f0c021ae66d1fbe2b6063beae5f90bf3d5ff05d615d33f"
+}

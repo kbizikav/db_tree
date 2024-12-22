@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "TRUNCATE current_leaf_hashes",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "d91e65e10357a08d66a7902c260db6db6d96383f5cf37804da3209f20846b974"
+}
