@@ -2,12 +2,15 @@ use intmax2_zkp::utils::{leafable::Leafable, leafable_hasher::LeafableHasher};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};
 
+type HashOut<V> = <<V as Leafable>::LeafableHasher as LeafableHasher>::HashOut;
+
 #[derive(Clone, Debug)]
 pub struct Node<V: Leafable> {
-    pub left: <V::LeafableHasher as LeafableHasher>::HashOut,
-    pub right: <V::LeafableHasher as LeafableHasher>::HashOut,
+    pub left: HashOut<V>,
+    pub right: HashOut<V>,
 }
 
+#[derive(Clone, Debug)]
 pub struct NodeDB<V: Leafable> {
     pool: Pool<Postgres>,
     _phantom: std::marker::PhantomData<V>,
@@ -25,11 +28,7 @@ impl<V: Leafable> NodeDB<V> {
         })
     }
 
-    pub async fn insert(
-        &self,
-        parent_hash: <V::LeafableHasher as LeafableHasher>::HashOut,
-        node: Node<V>,
-    ) -> anyhow::Result<()> {
+    pub async fn insert(&self, parent_hash: HashOut<V>, node: Node<V>) -> anyhow::Result<()> {
         sqlx::query!(
             r#"
             INSERT INTO hash_nodes (parent_hash, left_hash, right_hash)
@@ -45,10 +44,7 @@ impl<V: Leafable> NodeDB<V> {
         Ok(())
     }
 
-    pub async fn get(
-        &self,
-        parent_hash: <V::LeafableHasher as LeafableHasher>::HashOut,
-    ) -> anyhow::Result<Option<Node<V>>> {
+    pub async fn get(&self, parent_hash: HashOut<V>) -> anyhow::Result<Option<Node<V>>> {
         let row = sqlx::query!(
             r#"
             SELECT left_hash, right_hash
@@ -66,5 +62,41 @@ impl<V: Leafable> NodeDB<V> {
             })),
             None => Ok(None),
         }
+    }
+
+    pub async fn insert_leaf_hash(
+        &self,
+        position: u64,
+        leaf_hash: HashOut<V>,
+    ) -> anyhow::Result<()> {
+        sqlx::query!(
+            r#"
+            INSERT INTO current_leaf_hashes (position, leaf_hash)
+            VALUES ($1, $2)
+            ON CONFLICT (position) DO NOTHING
+            "#,
+            position as i64,
+            bincode::serialize(&leaf_hash)? as _
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_all_leaf_hashes(&self) -> anyhow::Result<Vec<(u64, HashOut<V>)>> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT position, leaf_hash
+            FROM current_leaf_hashes
+            ORDER BY position
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut leaf_hashes = Vec::new();
+        for row in rows {
+            leaf_hashes.push((row.position as u64, bincode::deserialize(&row.leaf_hash)?));
+        }
+        Ok(leaf_hashes)
     }
 }

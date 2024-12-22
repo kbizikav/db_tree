@@ -1,71 +1,75 @@
+use hashbrown::HashMap;
+use intmax2_zkp::utils::{leafable::Leafable, leafable_hasher::LeafableHasher};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use intmax2_zkp::utils::{leafable::Leafable, leafable_hasher::LeafableHasher};
-use sqlx::PgPool;
+use crate::node_db::{Node, NodeDB};
 
-use crate::EnvVar;
-
-// use crate::node_db::{MockDB, Node};
+type HashOut<V> = <<V as Leafable>::LeafableHasher as LeafableHasher>::HashOut;
 
 #[derive(Clone, Debug)]
 pub struct MerkleTree<V: Leafable> {
     height: usize,
-    zero_hashes: Vec<<V::LeafableHasher as LeafableHasher>::HashOut>,
-    pool: PgPool,
+    node_hashes: HashMap<Vec<bool>, HashOut<V>>,
+    zero_hashes: Vec<HashOut<V>>,
+    node_db: NodeDB<V>,
 }
 
 impl<V: Leafable> MerkleTree<V> {
-    // pub async fn new(
-    //     height: usize,
-    //     empty_leaf_hash: <V::LeafableHasher as LeafableHasher>::HashOut,
-    // ) -> anyhow::Result<Self> {
-    //     let env = envy::from_env::<EnvVar>().unwrap();
-    //     let pool = PgPool::connect(&env.database_url).await?;
+    pub async fn new(
+        height: usize,
+        empty_leaf_hash: HashOut<V>,
+        node_db: NodeDB<V>,
+    ) -> anyhow::Result<Self> {
+        // zero_hashes = reverse([H(zero_leaf), H(H(zero_leaf), H(zero_leaf)), ...])
+        let mut zero_hashes = vec![];
+        let mut h = empty_leaf_hash;
+        zero_hashes.push(h.clone());
+        for _ in 0..height {
+            let new_h = <V::LeafableHasher as LeafableHasher>::two_to_one(h, h);
+            zero_hashes.push(new_h);
+            node_db
+                .insert(new_h, Node { left: h, right: h })
+                .await
+                .unwrap();
+            h = new_h;
+        }
+        zero_hashes.reverse();
+        let node_hashes: HashMap<Vec<bool>, HashOut<V>> = HashMap::new();
 
-    //     // zero_hashes = reverse([H(zero_leaf), H(H(zero_leaf), H(zero_leaf)), ...])
-    //     let mut zero_hashes = vec![];
-    //     let mut h = empty_leaf_hash;
-    //     zero_hashes.push(h.clone());
-
-    //     let mut tx = pool.begin().await?;
-    //     for _ in 0..height {
-    //         let new_h = <V::LeafableHasher as LeafableHasher>::two_to_one(h, h);
-    //         zero_hashes.push(new_h);
-    //         sqlx::query!(
-    //             r#"
-    //             INSERT INTO hash_nodes (parent_hash, left_hash, right_hash)
-    //             VALUES ($1, $2, $3)
-    //             ON CONFLICT (parent_hash) DO NOTHING
-    //             "#,
-    //             bincode::serialize(&new_h)? as _,
-    //             bincode::serialize(&h)? as _,
-    //             bincode::serialize(&h)? as _
-    //         )
-    //         .execute(tx.as_mut())
-    //         .await?;
-
-    //         h = new_h;
-    //     }
-    //     tx.commit().await?;
-    //     zero_hashes.reverse();
-
-    //     Ok(Self {
-    //         height,
-    //         zero_hashes,
-    //         pool,
-    //     })
-    // }
+        Ok(Self {
+            height,
+            zero_hashes,
+            node_hashes,
+            node_db,
+        })
+    }
 
     pub fn height(&self) -> usize {
         self.height
     }
 
+    pub fn get_node_hash(&self, path: &Vec<bool>) -> HashOut<V> {
+        assert!(path.len() <= self.height);
+        match self.node_hashes.get(path) {
+            Some(h) => h.clone(),
+            None => self.zero_hashes[path.len()].clone(),
+        }
+    }
+
+    pub fn get_root(&self) -> HashOut<V> {
+        self.get_node_hash(&vec![])
+    }
+
+    fn get_sibling_hash(&self, path: &Vec<bool>) -> HashOut<V> {
+        assert!(!path.is_empty());
+        let mut path = path.clone();
+        let last = path.len() - 1;
+        path[last] = !path[last];
+        self.get_node_hash(&path)
+    }
+
     // index_bits is little endian
-    pub fn update_leaf(
-        &mut self,
-        index_bits: Vec<bool>,
-        leaf_hash: <V::LeafableHasher as LeafableHasher>::HashOut,
-    ) {
+    pub async fn update_leaf(&mut self, index_bits: Vec<bool>, leaf_hash: HashOut<V>) {
         assert_eq!(index_bits.len(), self.height);
         let mut path = index_bits;
         path.reverse(); // path is big endian
@@ -85,57 +89,48 @@ impl<V: Leafable> MerkleTree<V> {
                 left: if b { sibling } else { h.clone() },
                 right: if b { h.clone() } else { sibling },
             };
-            mock_db.insert(new_h.clone(), node);
+            self.node_db.insert(new_h.clone(), node).await.unwrap();
             h = new_h;
         }
     }
 
-    // pub fn prove(&self, index_bits: Vec<bool>) -> MerkleProof<V> {
-    //     assert_eq!(index_bits.len(), self.height);
-    //     let mut path = index_bits;
-    //     path.reverse(); // path is big endian
-
-    //     let mut siblings = vec![];
-    //     while !path.is_empty() {
-    //         siblings.push(self.get_sibling_hash(&path));
-    //         path.pop();
-    //     }
-    //     MerkleProof { siblings }
-    // }
-
-    // pub fn prove_with_given_root(
-    //     &self,
-    //     mock_db: &MockDB<V>,
-    //     root: <V::LeafableHasher as LeafableHasher>::HashOut,
-    //     index_bits: Vec<bool>,
-    // ) -> MerkleProof<V> {
-    //     assert_eq!(index_bits.len(), self.height);
-    //     let mut path = index_bits;
-    //     let mut siblings = vec![];
-    //     let mut hash = root;
-    //     while !path.is_empty() {
-    //         let node = mock_db.get(hash).expect("cannot find node");
-    //         let (child, sibling) = if path.pop().unwrap() {
-    //             (node.right, node.left)
-    //         } else {
-    //             (node.left, node.right)
-    //         };
-    //         siblings.push(sibling);
-    //         hash = child;
-    //     }
-    //     siblings.reverse();
-    //     MerkleProof { siblings }
-    // }
+    pub async fn prove_with_given_root(
+        &self,
+        root: HashOut<V>,
+        index_bits: Vec<bool>,
+    ) -> MerkleProof<V> {
+        assert_eq!(index_bits.len(), self.height);
+        let mut path = index_bits;
+        let mut siblings = vec![];
+        let mut hash = root;
+        while !path.is_empty() {
+            let node = self
+                .node_db
+                .get(hash)
+                .await
+                .unwrap()
+                .expect("cannot find node");
+            let (child, sibling) = if path.pop().unwrap() {
+                (node.right, node.left)
+            } else {
+                (node.left, node.right)
+            };
+            siblings.push(sibling);
+            hash = child;
+        }
+        siblings.reverse();
+        MerkleProof { siblings }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct MerkleProof<V: Leafable> {
-    pub siblings: Vec<<V::LeafableHasher as LeafableHasher>::HashOut>,
+    pub siblings: Vec<HashOut<V>>,
 }
 
 impl<V: Leafable> Serialize for MerkleProof<V>
 where
-    <V::LeafableHasher as LeafableHasher>::HashOut: Serialize,
+    HashOut<V>: Serialize,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -147,14 +142,13 @@ where
 
 impl<'de, V: Leafable> Deserialize<'de> for MerkleProof<V>
 where
-    <V::LeafableHasher as LeafableHasher>::HashOut: Deserialize<'de>,
+    HashOut<V>: Deserialize<'de>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let siblings =
-            Vec::<<V::LeafableHasher as LeafableHasher>::HashOut>::deserialize(deserializer)?;
+        let siblings = Vec::<HashOut<V>>::deserialize(deserializer)?;
         Ok(MerkleProof { siblings })
     }
 }
@@ -162,7 +156,7 @@ where
 impl<V: Leafable> MerkleProof<V> {
     pub fn dummy(height: usize) -> Self {
         Self {
-            siblings: vec![<V::LeafableHasher as LeafableHasher>::HashOut::default(); height],
+            siblings: vec![HashOut::<V>::default(); height],
         }
     }
 
@@ -170,11 +164,7 @@ impl<V: Leafable> MerkleProof<V> {
         self.siblings.len()
     }
 
-    pub fn get_root(
-        &self,
-        leaf_data: &V,
-        index_bits: Vec<bool>,
-    ) -> <V::LeafableHasher as LeafableHasher>::HashOut {
+    pub fn get_root(&self, leaf_data: &V, index_bits: Vec<bool>) -> HashOut<V> {
         let mut state = leaf_data.hash();
         for (&bit, sibling) in index_bits.iter().zip(self.siblings.iter()) {
             state = if bit {
@@ -190,7 +180,7 @@ impl<V: Leafable> MerkleProof<V> {
         &self,
         leaf_data: &V,
         index_bits: Vec<bool>, // little endian
-        merkle_root: <V::LeafableHasher as LeafableHasher>::HashOut,
+        merkle_root: HashOut<V>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.get_root(leaf_data, index_bits) == merkle_root,
