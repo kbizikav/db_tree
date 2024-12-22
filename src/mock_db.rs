@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use hashbrown::HashMap;
 use intmax2_zkp::utils::{leafable::Leafable, leafable_hasher::LeafableHasher};
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
@@ -14,7 +15,12 @@ pub struct Node<V: Leafable> {
     pub right_hash: HashOut<V>,
 }
 
-pub trait NodeDB<V: Leafable> {}
+#[async_trait(?Send)]
+pub trait NodeDB<V: Leafable>: std::fmt::Debug + Clone {
+    async fn insert(&self, parent_hash: HashOut<V>, node: Node<V>) -> anyhow::Result<()>;
+
+    async fn get(&self, parent_hash: HashOut<V>) -> anyhow::Result<Option<Node<V>>>;
+}
 
 #[derive(Clone, Debug)]
 pub struct MockDB<V: Leafable> {
@@ -29,13 +35,15 @@ impl<V: Leafable> MockDB<V> {
     }
 }
 
-impl<V: Leafable> MockDB<V> {
-    pub async fn insert(&self, parent_hash: HashOut<V>, node: Node<V>) {
+#[async_trait(?Send)]
+impl<V: Leafable> NodeDB<V> for MockDB<V> {
+    async fn insert(&self, parent_hash: HashOut<V>, node: Node<V>) -> anyhow::Result<()> {
         self.nodes.write().await.insert(parent_hash, node);
+        Ok(())
     }
 
-    pub async fn get(&self, parent_hash: HashOut<V>) -> Option<Node<V>> {
-        self.nodes.read().await.get(&parent_hash).cloned()
+    async fn get(&self, parent_hash: HashOut<V>) -> anyhow::Result<Option<Node<V>>> {
+        Ok(self.nodes.read().await.get(&parent_hash).cloned())
     }
 }
 
@@ -58,8 +66,9 @@ impl<V: Leafable> RealDB<V> {
     }
 }
 
-impl<V: Leafable> RealDB<V> {
-    pub async fn insert(&self, parent_hash: HashOut<V>, node: Node<V>) -> anyhow::Result<()> {
+#[async_trait(?Send)]
+impl<V: Leafable> NodeDB<V> for RealDB<V> {
+    async fn insert(&self, parent_hash: HashOut<V>, node: Node<V>) -> anyhow::Result<()> {
         sqlx::query!(
             r#"
             INSERT INTO hash_nodes (parent_hash, left_hash, right_hash)
@@ -75,7 +84,7 @@ impl<V: Leafable> RealDB<V> {
         Ok(())
     }
 
-    pub async fn get(&self, parent_hash: HashOut<V>) -> anyhow::Result<Option<Node<V>>> {
+    async fn get(&self, parent_hash: HashOut<V>) -> anyhow::Result<Option<Node<V>>> {
         let row = sqlx::query!(
             r#"
             SELECT left_hash, right_hash

@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use intmax2_zkp::utils::{leafable::Leafable, leafable_hasher::LeafableHasher};
 
-use crate::mock_db::{MockDB, Node};
+use crate::mock_db::{Node, NodeDB};
 
 type Hasher<V> = <V as Leafable>::LeafableHasher;
 type HashOut<V> = <Hasher<V> as LeafableHasher>::HashOut;
@@ -15,41 +15,53 @@ type HashOut<V> = <Hasher<V> as LeafableHasher>::HashOut;
 // Note that this is different from the original plonky2 Merkle Tree which
 // uses little endian path.
 #[derive(Clone, Debug)]
-pub struct MerkleTree<V: Leafable> {
+pub struct MerkleTree<V: Leafable, DB: NodeDB<V>> {
     height: usize,
     node_hashes: HashMap<Vec<bool>, HashOut<V>>,
     zero_hashes: Vec<HashOut<V>>,
+    node_db: DB,
 }
 
-impl<V: Leafable> MerkleTree<V> {
-    pub async fn new(mock_db: &MockDB<V>, height: usize) -> Self {
-        // zero_hashes = reverse([H(zero_leaf), H(H(zero_leaf), H(zero_leaf)), ...])
-        let mut zero_hashes = vec![];
-        let mut h = V::empty_leaf().hash();
-        zero_hashes.push(h.clone());
-        for _ in 0..height {
-            let new_h = Hasher::<V>::two_to_one(h, h);
-            zero_hashes.push(new_h);
-            mock_db
-                .insert(
-                    new_h,
-                    Node {
-                        left_hash: h.clone(),
-                        right_hash: h.clone(),
-                    },
-                )
-                .await;
-            h = new_h;
-        }
-        zero_hashes.reverse();
-
+impl<V: Leafable, DB: NodeDB<V>> MerkleTree<V, DB> {
+    pub async fn new(node_db: DB, height: usize) -> Self {
+        let zero_hashes = Self::init_zero_hashes(height, HashOut::<V>::default(), &node_db)
+            .await
+            .unwrap();
         let node_hashes: HashMap<Vec<bool>, HashOut<V>> = HashMap::new();
-
         Self {
             height,
             node_hashes,
             zero_hashes,
+            node_db,
         }
+    }
+
+    async fn init_zero_hashes(
+        height: usize,
+        empty_leaf_hash: HashOut<V>,
+        node_db: &DB,
+    ) -> anyhow::Result<Vec<HashOut<V>>> {
+        // zero_hashes = reverse([H(zero_leaf), H(H(zero_leaf), H(zero_leaf)), ...])
+        let mut zero_hashes = vec![];
+        let mut h = empty_leaf_hash;
+        zero_hashes.push(h.clone());
+        for _ in 0..height {
+            let new_h = Hasher::<V>::two_to_one(h, h);
+            zero_hashes.push(new_h);
+            node_db
+                .insert(
+                    new_h,
+                    Node {
+                        left_hash: h,
+                        right_hash: h,
+                    },
+                )
+                .await
+                .unwrap();
+            h = new_h;
+        }
+        zero_hashes.reverse();
+        Ok(zero_hashes)
     }
 
     pub fn height(&self) -> usize {
@@ -77,9 +89,9 @@ impl<V: Leafable> MerkleTree<V> {
     }
 
     // index_bits is little endian
-    pub async fn update_leaf(&mut self, mock_db: &MockDB<V>, index: u64, leaf_hash: HashOut<V>) {
+    pub async fn update_leaf(&mut self, index: u64, leaf_hash: HashOut<V>) {
         let mut path = u64_le_bits(index, self.height());
-        path.reverse(); // path is big endian
+        path.reverse();
 
         let mut h = leaf_hash;
         self.node_hashes.insert(path.clone(), h.clone()); // leaf node
@@ -97,22 +109,22 @@ impl<V: Leafable> MerkleTree<V> {
                 left_hash: if b { sibling } else { h.clone() },
                 right_hash: if b { h.clone() } else { sibling },
             };
-            mock_db.insert(new_h.clone(), node).await;
+            self.node_db.insert(new_h.clone(), node).await.unwrap();
             h = new_h;
         }
     }
 
-    pub async fn prove_with_given_root(
-        &self,
-        mock_db: &MockDB<V>,
-        root: HashOut<V>,
-        index: u64,
-    ) -> MerkleProof<V> {
+    pub async fn prove_with_given_root(&self, root: HashOut<V>, index: u64) -> MerkleProof<V> {
         let mut path = u64_le_bits(index, self.height());
         let mut siblings = vec![];
         let mut hash = root;
         while !path.is_empty() {
-            let node = mock_db.get(hash).await.expect("cannot find node");
+            let node = self
+                .node_db
+                .get(hash)
+                .await
+                .unwrap()
+                .expect("cannot find node");
             let (child, sibling) = if path.pop().unwrap() {
                 (node.right_hash, node.left_hash)
             } else {
@@ -203,7 +215,7 @@ pub fn u64_le_bits(num: u64, length: usize) -> Vec<bool> {
 mod test {
     use intmax2_zkp::utils::{leafable::Leafable, poseidon_hash_out::PoseidonHashOut};
 
-    use crate::mock_db::MockDB;
+    use crate::mock_db::RealDB;
 
     use super::MerkleTree;
 
@@ -212,24 +224,25 @@ mod test {
     #[tokio::test]
     async fn test_prove_with_given_root() {
         let height = 32;
+        dotenv::dotenv().ok();
 
-        let mock_db = MockDB::<Leaf>::new();
-        let mut merkle_tree = MerkleTree::new(&mock_db, height).await;
+        // let node_db = MockDB::<Leaf>::new();
+        let database_url = std::env::var("DATABASE_URL").unwrap();
+        let node_db = RealDB::<Leaf>::new(&database_url).await.unwrap();
+        let mut merkle_tree = MerkleTree::new(node_db, height).await;
 
         for i in 0..10 {
             let leaf = i as u32;
-            merkle_tree.update_leaf(&mock_db, i, leaf.hash()).await;
+            merkle_tree.update_leaf(i, leaf.hash()).await;
         }
         let root1 = merkle_tree.get_root();
         for i in 10..20 {
             let leaf_hash = PoseidonHashOut::hash_inputs_u32(&[i as u32]);
-            merkle_tree.update_leaf(&mock_db, i, leaf_hash).await;
+            merkle_tree.update_leaf(i, leaf_hash).await;
         }
         let index = 6;
         let leaf = index as u32;
-        let proof = merkle_tree
-            .prove_with_given_root(&mock_db, root1, index)
-            .await;
+        let proof = merkle_tree.prove_with_given_root(root1, index).await;
         proof.verify(&leaf, index, root1).unwrap();
         let root1_expected = proof.get_root(&leaf, index);
         assert_eq!(root1, root1_expected);
