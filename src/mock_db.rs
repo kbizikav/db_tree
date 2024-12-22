@@ -7,6 +7,10 @@ pub struct Node<V: Leafable> {
     pub right: <V::LeafableHasher as LeafableHasher>::HashOut,
 }
 
+pub trait NodeDB<V: Leafable> {
+    
+}
+
 #[derive(Clone, Debug)]
 pub struct MockDB<V: Leafable> {
     nodes: HashMap<<V::LeafableHasher as LeafableHasher>::HashOut, Node<V>>, // parents hash to node (2 child hashes)
