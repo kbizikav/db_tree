@@ -4,7 +4,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::node_db::{Node, NodeDB};
 
-type HashOut<V> = <<V as Leafable>::LeafableHasher as LeafableHasher>::HashOut;
+type Hasher<V> = <V as Leafable>::LeafableHasher;
+type HashOut<V> = <Hasher<V> as LeafableHasher>::HashOut;
 
 #[derive(Clone, Debug)]
 pub struct MerkleTree<V: Leafable> {
@@ -20,12 +21,34 @@ impl<V: Leafable> MerkleTree<V> {
         empty_leaf_hash: HashOut<V>,
         node_db: NodeDB<V>,
     ) -> anyhow::Result<Self> {
+        let zero_hashes = Self::init_zero_hashes(height, empty_leaf_hash, &node_db).await?;
+        let leah_hashes = node_db.get_all_leaf_hashes().await.unwrap();
+        let node_hashes: HashMap<Vec<bool>, HashOut<V>> = HashMap::new();
+        let mut tree = Self {
+            height,
+            zero_hashes,
+            node_hashes,
+            node_db,
+        };
+        // Insert the leaf hashes
+        for (index, leaf_hash) in leah_hashes.iter() {
+            let index_bits = u64_le_bits(*index, height);
+            tree.update_leaf(index_bits, leaf_hash.clone()).await;
+        }
+        Ok(tree)
+    }
+
+    async fn init_zero_hashes(
+        height: usize,
+        empty_leaf_hash: HashOut<V>,
+        node_db: &NodeDB<V>,
+    ) -> anyhow::Result<Vec<HashOut<V>>> {
         // zero_hashes = reverse([H(zero_leaf), H(H(zero_leaf), H(zero_leaf)), ...])
         let mut zero_hashes = vec![];
         let mut h = empty_leaf_hash;
         zero_hashes.push(h.clone());
         for _ in 0..height {
-            let new_h = <V::LeafableHasher as LeafableHasher>::two_to_one(h, h);
+            let new_h = Hasher::<V>::two_to_one(h, h);
             zero_hashes.push(new_h);
             node_db
                 .insert(new_h, Node { left: h, right: h })
@@ -34,14 +57,7 @@ impl<V: Leafable> MerkleTree<V> {
             h = new_h;
         }
         zero_hashes.reverse();
-        let node_hashes: HashMap<Vec<bool>, HashOut<V>> = HashMap::new();
-
-        Ok(Self {
-            height,
-            zero_hashes,
-            node_hashes,
-            node_db,
-        })
+        Ok(zero_hashes)
     }
 
     pub fn height(&self) -> usize {
@@ -75,14 +91,13 @@ impl<V: Leafable> MerkleTree<V> {
         path.reverse(); // path is big endian
 
         let mut h = leaf_hash;
-
         while !path.is_empty() {
             let sibling = self.get_sibling_hash(&path);
             let b = path.pop().unwrap();
             let new_h = if b {
-                <V::LeafableHasher as LeafableHasher>::two_to_one(sibling, h)
+                Hasher::<V>::two_to_one(sibling, h)
             } else {
-                <V::LeafableHasher as LeafableHasher>::two_to_one(h, sibling)
+                Hasher::<V>::two_to_one(h, sibling)
             };
             self.node_hashes.insert(path.clone(), new_h.clone());
             let node = Node {
@@ -168,9 +183,9 @@ impl<V: Leafable> MerkleProof<V> {
         let mut state = leaf_data.hash();
         for (&bit, sibling) in index_bits.iter().zip(self.siblings.iter()) {
             state = if bit {
-                <V::LeafableHasher as LeafableHasher>::two_to_one(*sibling, state)
+                Hasher::<V>::two_to_one(*sibling, state)
             } else {
-                <V::LeafableHasher as LeafableHasher>::two_to_one(state, *sibling)
+                Hasher::<V>::two_to_one(state, *sibling)
             }
         }
         state
@@ -190,7 +205,7 @@ impl<V: Leafable> MerkleProof<V> {
     }
 }
 
-pub fn usize_le_bits(num: usize, length: usize) -> Vec<bool> {
+pub fn u64_le_bits(num: u64, length: usize) -> Vec<bool> {
     let mut result = Vec::with_capacity(length);
     let mut n = num;
     for _ in 0..length {
