@@ -20,6 +20,7 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>>
 {
     pub async fn new(node_db: DB, height: u32) -> HMTResult<Self> {
         let merkle_tree = HistoricalMerkleTree::new(node_db, height).await?;
+        merkle_tree.node_db().insert_leaf(V::empty_leaf()).await?;
         Ok(Self(merkle_tree))
     }
 
@@ -79,7 +80,6 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>>
 #[cfg(test)]
 mod tests {
     use intmax2_zkp::ethereum_types::{bytes32::Bytes32, u32limb_trait::U32LimbTrait as _};
-    use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig};
     use rand::Rng;
     use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{
@@ -87,10 +87,6 @@ mod tests {
     };
 
     use crate::{incremental_merkle_tree::HistoricalIncrementalMerkleTree, node::SqlNodeDB};
-
-    const D: usize = 2;
-    type C = PoseidonGoldilocksConfig;
-    type F = <C as GenericConfig<D>>::F;
 
     #[tokio::test]
     async fn merkle_tree_with_leaves() -> anyhow::Result<()> {
@@ -112,19 +108,23 @@ mod tests {
 
         type V = Bytes32;
         let node_db = SqlNodeDB::<V>::new(&database_url, tag).await?;
-        let mut tree = HistoricalIncrementalMerkleTree::new(node_db, height);
+        let mut tree = HistoricalIncrementalMerkleTree::new(node_db, height).await?;
 
         for _ in 0..100 {
             let new_leaf = Bytes32::rand(&mut rng);
-            tree.push(new_leaf);
+            tree.push(new_leaf).await?;
+        }
+        let root = tree.get_root()?;
+        for _ in 0..100 {
+            let new_leaf = Bytes32::rand(&mut rng);
+            tree.push(new_leaf).await?;
         }
 
         for _ in 0..100 {
             let index = rng.gen_range(0..1 << height);
-            let leaf = tree.get_leaf(index);
-            let proof = tree.prove(index);
-            assert_eq!(tree.get_leaf(index), leaf.clone());
-            proof.verify(&leaf, index, tree.get_root()).unwrap();
+            let leaf = tree.get_leaf_by_root(root, index).await?;
+            let proof = tree.prove_by_root(root, index).await?;
+            proof.verify(&leaf, index, root).unwrap();
         }
 
         Ok(())
