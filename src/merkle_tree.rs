@@ -98,10 +98,6 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         self.get_node_hash(path.sibling())
     }
 
-    pub fn get_current_root(&self) -> HMTResult<HashOut<V>> {
-        self.get_node_hash(BitPath::default())
-    }
-
     pub async fn update_leaf(
         &mut self,
         update_db: bool,
@@ -157,6 +153,10 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         }
         siblings.reverse();
         Ok((MerkleProof { siblings }, hash))
+    }
+
+    pub fn get_current_root(&self) -> HMTResult<HashOut<V>> {
+        self.get_node_hash(BitPath::default())
     }
 
     pub async fn get_leaf_hash_by_root(
