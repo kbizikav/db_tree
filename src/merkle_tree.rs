@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use intmax2_zkp::utils::{
     leafable::Leafable, leafable_hasher::LeafableHasher, trees::merkle_tree::MerkleProof,
 };
+use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
     bit_path::BitPath,
@@ -15,14 +16,14 @@ type HashOut<V> = <Hasher<V> as LeafableHasher>::HashOut;
 type HistoricalMerkleTreeResult<T> = Result<T, HistoricalMerkleTreeError>;
 
 #[derive(Clone, Debug)]
-pub struct HistoricalMerkleTree<V: Leafable, DB: NodeDB<V>> {
+pub struct HistoricalMerkleTree<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> {
     height: u32,
     node_hashes: HashMap<BitPath, HashOut<V>>,
     zero_hashes: Vec<HashOut<V>>,
     node_db: DB,
 }
 
-impl<V: Leafable, DB: NodeDB<V>> HistoricalMerkleTree<V, DB> {
+impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkleTree<V, DB> {
     pub async fn new(node_db: DB, height: u32) -> HistoricalMerkleTreeResult<Self> {
         let zero_hashes = Self::init_zero_hashes(height, &node_db).await?;
         let node_hashes: HashMap<BitPath, HashOut<V>> = HashMap::new();
@@ -200,8 +201,9 @@ mod test {
 
         let mut rng = rand::thread_rng();
         let database_url = std::env::var("DATABASE_URL")?;
+        let tag = 0;
 
-        let node_db = SqlNodeDB::<Leaf>::new(&database_url).await?;
+        let node_db = SqlNodeDB::<Leaf>::new(&database_url, tag).await?;
         // node_db.reset().await?;
         let mut merkle_tree = HistoricalMerkleTree::new(node_db, height).await?;
         merkle_tree.load().await?;

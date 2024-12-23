@@ -2,10 +2,10 @@ use crate::error::NodeDBError;
 use async_trait::async_trait;
 use hashbrown::HashMap;
 use intmax2_zkp::utils::{leafable::Leafable, leafable_hasher::LeafableHasher};
+use serde::{de::DeserializeOwned, Serialize};
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::instrument;
 
 pub type NodeDBResult<T> = Result<T, NodeDBError>;
 type Hasher<V> = <V as Leafable>::LeafableHasher;
@@ -18,11 +18,13 @@ pub struct Node<V: Leafable> {
 }
 
 #[async_trait(?Send)]
-pub trait NodeDB<V: Leafable>: std::fmt::Debug + Clone {
+pub trait NodeDB<V: Leafable + Serialize + DeserializeOwned>: std::fmt::Debug + Clone {
     async fn insert(&self, parent_hash: HashOut<V>, node: Node<V>) -> NodeDBResult<()>;
     async fn get(&self, parent_hash: HashOut<V>) -> NodeDBResult<Option<Node<V>>>;
     async fn insert_leaf_hash(&self, position: u64, leaf_hash: HashOut<V>) -> NodeDBResult<()>;
+    async fn insert_leaf(&self, leaf: V) -> NodeDBResult<()>;
     async fn get_leaf_hash(&self, position: u64) -> NodeDBResult<Option<HashOut<V>>>;
+    async fn get_leaf_by_hash(&self, hash: HashOut<V>) -> NodeDBResult<Option<V>>;
     async fn get_all_leaf_hashes(&self) -> NodeDBResult<Vec<(u64, HashOut<V>)>>;
     async fn reset(&self) -> NodeDBResult<()>;
 }
@@ -31,6 +33,7 @@ pub trait NodeDB<V: Leafable>: std::fmt::Debug + Clone {
 pub struct MockNodeDB<V: Leafable> {
     nodes: Arc<RwLock<HashMap<HashOut<V>, Node<V>>>>,
     leaf_hashes: Arc<RwLock<HashMap<u64, HashOut<V>>>>,
+    leaves: Arc<RwLock<HashMap<HashOut<V>, V>>>,
 }
 
 impl<V: Leafable> MockNodeDB<V> {
@@ -38,12 +41,13 @@ impl<V: Leafable> MockNodeDB<V> {
         MockNodeDB {
             nodes: Arc::new(RwLock::new(HashMap::new())),
             leaf_hashes: Arc::new(RwLock::new(HashMap::new())),
+            leaves: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
 
 #[async_trait(?Send)]
-impl<V: Leafable> NodeDB<V> for MockNodeDB<V> {
+impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for MockNodeDB<V> {
     async fn insert(&self, parent_hash: HashOut<V>, node: Node<V>) -> NodeDBResult<()> {
         self.nodes.write().await.insert(parent_hash, node);
         Ok(())
@@ -58,8 +62,17 @@ impl<V: Leafable> NodeDB<V> for MockNodeDB<V> {
         Ok(())
     }
 
+    async fn insert_leaf(&self, leaf: V) -> NodeDBResult<()> {
+        self.leaves.write().await.insert(leaf.hash(), leaf);
+        Ok(())
+    }
+
     async fn get_leaf_hash(&self, position: u64) -> NodeDBResult<Option<HashOut<V>>> {
         Ok(self.leaf_hashes.read().await.get(&position).cloned())
+    }
+
+    async fn get_leaf_by_hash(&self, hash: HashOut<V>) -> NodeDBResult<Option<V>> {
+        Ok(self.leaves.read().await.get(&hash).cloned())
     }
 
     async fn get_all_leaf_hashes(&self) -> NodeDBResult<Vec<(u64, HashOut<V>)>> {
@@ -80,18 +93,20 @@ impl<V: Leafable> NodeDB<V> for MockNodeDB<V> {
 }
 
 #[derive(Clone, Debug)]
-pub struct SqlNodeDB<V: Leafable> {
+pub struct SqlNodeDB<V: Leafable + Serialize + DeserializeOwned> {
+    tag: u32, // tag is used to distinguish between different trees in the same database
     pool: Pool<Postgres>,
     _phantom: std::marker::PhantomData<V>,
 }
 
-impl<V: Leafable> SqlNodeDB<V> {
-    pub async fn new(db_url: &str) -> NodeDBResult<Self> {
+impl<V: Leafable + Serialize + DeserializeOwned> SqlNodeDB<V> {
+    pub async fn new(db_url: &str, tag: u32) -> NodeDBResult<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(10)
             .connect(db_url)
             .await?;
         Ok(SqlNodeDB {
+            tag,
             pool,
             _phantom: std::marker::PhantomData,
         })
@@ -99,7 +114,7 @@ impl<V: Leafable> SqlNodeDB<V> {
 }
 
 #[async_trait(?Send)]
-impl<V: Leafable> NodeDB<V> for SqlNodeDB<V> {
+impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
     async fn insert(&self, parent_hash: HashOut<V>, node: Node<V>) -> NodeDBResult<()> {
         let serialized_parent = bincode::serialize(&parent_hash)?;
         let serialized_left = bincode::serialize(&node.left_hash)?;
@@ -107,10 +122,11 @@ impl<V: Leafable> NodeDB<V> for SqlNodeDB<V> {
 
         sqlx::query!(
             r#"
-            INSERT INTO hash_nodes (parent_hash, left_hash, right_hash)
-            VALUES ($1, $2, $3)
+            INSERT INTO hash_nodes (tag, parent_hash, left_hash, right_hash)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (parent_hash) DO NOTHING
             "#,
+            self.tag as i32,
             serialized_parent as _,
             serialized_left as _,
             serialized_right as _
@@ -128,9 +144,10 @@ impl<V: Leafable> NodeDB<V> for SqlNodeDB<V> {
             r#"
             SELECT left_hash, right_hash
             FROM hash_nodes
-            WHERE parent_hash = $1
+            WHERE parent_hash = $1 AND tag = $2
             "#,
-            serialized_hash as _
+            serialized_hash as _,
+            self.tag as i32
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -154,12 +171,34 @@ impl<V: Leafable> NodeDB<V> for SqlNodeDB<V> {
 
         sqlx::query!(
             r#"
-            INSERT INTO current_leaf_hashes (position, leaf_hash)
-            VALUES ($1, $2)
+            INSERT INTO current_leaf_hashes (tag, position, leaf_hash)
+            VALUES ($1, $2, $3)
             ON CONFLICT (position) DO NOTHING
             "#,
+            self.tag as i32,
             position as i64,
             serialized_hash as _
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn insert_leaf(&self, leaf: V) -> NodeDBResult<()> {
+        let hash = leaf.hash();
+        let serialized_hash = bincode::serialize(&hash)?;
+        let serialized_leaf = bincode::serialize(&leaf)?;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO leaves (tag, leaf_hash, leaf)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (leaf_hash) DO NOTHING
+            "#,
+            self.tag as i32,
+            serialized_hash as _,
+            serialized_leaf as _
         )
         .execute(&self.pool)
         .await?;
@@ -172,9 +211,10 @@ impl<V: Leafable> NodeDB<V> for SqlNodeDB<V> {
             r#"
             SELECT leaf_hash
             FROM current_leaf_hashes
-            WHERE position = $1
+            WHERE position = $1 AND tag = $2
             "#,
-            position as i64
+            position as i64,
+            self.tag as i32
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -188,15 +228,40 @@ impl<V: Leafable> NodeDB<V> for SqlNodeDB<V> {
         }
     }
 
-    #[instrument(target = "get_all_leaf_hashes", level = "trace")]
+    async fn get_leaf_by_hash(&self, hash: HashOut<V>) -> NodeDBResult<Option<V>> {
+        let serialized_hash = bincode::serialize(&hash)?;
+
+        let row = sqlx::query!(
+            r#"
+            SELECT leaf
+            FROM leaves
+            WHERE leaf_hash = $1 AND tag = $2
+            "#,
+            serialized_hash as _,
+            self.tag as i32
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let leaf = bincode::deserialize(&row.leaf)?;
+                Ok(Some(leaf))
+            }
+            None => Ok(None),
+        }
+    }
+
     async fn get_all_leaf_hashes(&self) -> NodeDBResult<Vec<(u64, HashOut<V>)>> {
         let time = std::time::Instant::now();
         let rows = sqlx::query!(
             r#"
             SELECT position, leaf_hash
-            FROM current_leaf_hashes
+            FROM current_leaf_hashes 
+            WHERE tag = $1
             ORDER BY position
-            "#
+            "#,
+            self.tag as i32
         )
         .fetch_all(&self.pool)
         .await?;
