@@ -5,6 +5,7 @@ use intmax2_zkp::utils::{
 };
 
 use crate::{
+    bit_path::BitPath,
     error::HistoricalMerkleTreeError,
     node::{Node, NodeDB},
 };
@@ -15,16 +16,16 @@ type HistoricalMerkleTreeResult<T> = Result<T, HistoricalMerkleTreeError>;
 
 #[derive(Clone, Debug)]
 pub struct HistoricalMerkleTree<V: Leafable, DB: NodeDB<V>> {
-    height: usize,
-    node_hashes: HashMap<Vec<bool>, HashOut<V>>,
+    height: u32,
+    node_hashes: HashMap<BitPath, HashOut<V>>,
     zero_hashes: Vec<HashOut<V>>,
     node_db: DB,
 }
 
 impl<V: Leafable, DB: NodeDB<V>> HistoricalMerkleTree<V, DB> {
-    pub async fn new(node_db: DB, height: usize) -> Self {
+    pub async fn new(node_db: DB, height: u32) -> Self {
         let zero_hashes = Self::init_zero_hashes(height, &node_db).await.unwrap();
-        let node_hashes: HashMap<Vec<bool>, HashOut<V>> = HashMap::new();
+        let node_hashes: HashMap<BitPath, HashOut<V>> = HashMap::new();
         Self {
             height,
             node_hashes,
@@ -44,7 +45,7 @@ impl<V: Leafable, DB: NodeDB<V>> HistoricalMerkleTree<V, DB> {
     }
 
     async fn init_zero_hashes(
-        height: usize,
+        height: u32,
         node_db: &DB,
     ) -> HistoricalMerkleTreeResult<Vec<HashOut<V>>> {
         // zero_hashes = reverse([H(zero_leaf), H(H(zero_leaf), H(zero_leaf)), ...])
@@ -69,33 +70,30 @@ impl<V: Leafable, DB: NodeDB<V>> HistoricalMerkleTree<V, DB> {
         Ok(zero_hashes)
     }
 
-    pub fn height(&self) -> usize {
+    pub fn height(&self) -> u32 {
         self.height
     }
 
     pub fn get_root(&self) -> HistoricalMerkleTreeResult<HashOut<V>> {
-        self.get_node_hash(&[])
+        self.get_node_hash(BitPath::default())
     }
 
-    fn get_node_hash(&self, path: &[bool]) -> HistoricalMerkleTreeResult<HashOut<V>> {
+    fn get_node_hash(&self, path: BitPath) -> HistoricalMerkleTreeResult<HashOut<V>> {
         if path.len() > self.height {
             return Err(HistoricalMerkleTreeError::WrongPathLength(path.len() as u32));
         }
-        let hash = match self.node_hashes.get(path) {
+        let hash = match self.node_hashes.get(&path) {
             Some(h) => h.clone(),
-            None => self.zero_hashes[path.len()].clone(),
+            None => self.zero_hashes[path.len() as usize].clone(),
         };
         Ok(hash)
     }
 
-    fn get_sibling_hash(&self, path: &[bool]) -> HistoricalMerkleTreeResult<HashOut<V>> {
+    fn get_sibling_hash(&self, path: BitPath) -> HistoricalMerkleTreeResult<HashOut<V>> {
         if path.is_empty() {
             return Err(HistoricalMerkleTreeError::WrongPathLength(0));
         }
-        let mut path = path.to_vec();
-        let last = path.len() - 1;
-        path[last] = !path[last];
-        self.get_node_hash(&path)
+        self.get_node_hash(path.sibling())
     }
 
     pub async fn update_leaf(
@@ -104,13 +102,13 @@ impl<V: Leafable, DB: NodeDB<V>> HistoricalMerkleTree<V, DB> {
         index: u64,
         leaf_hash: HashOut<V>,
     ) -> HistoricalMerkleTreeResult<()> {
-        let mut path = u64_le_bits(index, self.height());
+        let mut path = BitPath::new(self.height(), index);
         path.reverse();
         let mut h = leaf_hash;
         self.node_hashes.insert(path.clone(), h.clone()); // leaf node
 
         while !path.is_empty() {
-            let sibling = self.get_sibling_hash(&path)?;
+            let sibling = self.get_sibling_hash(path)?;
             let b = path.pop().unwrap(); // safe to unwrap
             let new_h = if b {
                 Hasher::<V>::two_to_one(sibling, h)
@@ -137,7 +135,7 @@ impl<V: Leafable, DB: NodeDB<V>> HistoricalMerkleTree<V, DB> {
         index: u64,
         leaf: HashOut<V>,
     ) -> HistoricalMerkleTreeResult<MerkleProof<V>> {
-        let mut path = u64_le_bits(index, self.height());
+        let mut path = BitPath::new(self.height(), index);
         let mut siblings = vec![];
         let mut hash = root;
         while !path.is_empty() {
@@ -229,9 +227,9 @@ mod test {
                 .expect("leaf not found")
         );
         let proof = merkle_tree.prove_by_root(root1, index, leaf.hash()).await?;
-        let index_bits = super::u64_le_bits(index, height);
+        let index_bits = super::u64_le_bits(index, height as usize);
         proof.verify(&leaf, index_bits, root1)?;
-        
+
         Ok(())
     }
 }

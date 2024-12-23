@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Hash)]
+#[derive(Default, Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct BitPath {
     length: u32,
     value: u64,
@@ -13,7 +13,7 @@ impl BitPath {
         self.length == 0
     }
 
-    pub fn length(&self) -> u32 {
+    pub fn len(&self) -> u32 {
         self.length
     }
 
@@ -36,6 +36,38 @@ impl BitPath {
         self.length -= 1;
         Some(bit == 1)
     }
+
+    pub fn to_bits_le(&self) -> Vec<bool> {
+        let mut s = self.clone();
+        let mut bits = Vec::new();
+        while !s.is_empty() {
+            bits.push(s.pop().unwrap());
+        }
+        bits.reverse(); // reverse to get little-endian bits
+        bits
+    }
+
+    pub fn from_bits_le(bits: &[bool]) -> Self {
+        let mut path = BitPath::default();
+        for bit in bits {
+            path.push(*bit);
+        }
+        path
+    }
+
+    pub fn reverse(&mut self) {
+        let mut bits = self.to_bits_le();
+        bits.reverse();
+        *self = BitPath::from_bits_le(&bits);
+    }
+
+    pub fn sibling(&self) -> Self {
+        // flip the last bit
+        let mut path = self.clone();
+        let last = path.len() - 1;
+        path.value = path.value ^ (1 << last);
+        path
+    }
 }
 
 #[cfg(test)]
@@ -46,32 +78,37 @@ mod tests {
     fn test_bit_path() {
         let mut path = BitPath::new(0, 0);
         assert_eq!(path.is_empty(), true);
-        assert_eq!(path.length(), 0);
+        assert_eq!(path.len(), 0);
         assert_eq!(path.value(), 0);
 
         path.push(true);
         assert_eq!(path.is_empty(), false);
-        assert_eq!(path.length(), 1);
+        assert_eq!(path.len(), 1);
         assert_eq!(path.value(), 1);
 
         path.push(false);
         assert_eq!(path.is_empty(), false);
-        assert_eq!(path.length(), 2);
+        assert_eq!(path.len(), 2);
         assert_eq!(path.value(), 1);
+
+        let bits = path.to_bits_le();
+        assert_eq!(bits, vec![true, false]);
+        let recovered_path = BitPath::from_bits_le(&bits);
+        assert_eq!(recovered_path, path);
 
         assert_eq!(path.pop(), Some(false));
         assert_eq!(path.is_empty(), false);
-        assert_eq!(path.length(), 1);
+        assert_eq!(path.len(), 1);
         assert_eq!(path.value(), 1);
 
         assert_eq!(path.pop(), Some(true));
         assert_eq!(path.is_empty(), true);
-        assert_eq!(path.length(), 0);
+        assert_eq!(path.len(), 0);
         assert_eq!(path.value(), 0);
 
         assert_eq!(path.pop(), None);
         assert_eq!(path.is_empty(), true);
-        assert_eq!(path.length(), 0);
+        assert_eq!(path.len(), 0);
         assert_eq!(path.value(), 0);
     }
 }
