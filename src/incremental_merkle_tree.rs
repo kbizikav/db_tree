@@ -1,22 +1,10 @@
-use plonky2::{
-    field::{extension::Extendable, types::Field},
-    hash::{hash_types::RichField, merkle_tree::MerkleTree},
-    iop::{
-        target::{BoolTarget, Target},
-        witness::WitnessWrite,
-    },
-    plonk::{
-        circuit_builder::CircuitBuilder,
-        config::{AlgebraicHasher, GenericConfig},
-    },
-};
-
 use intmax2_zkp::utils::{
-    leafable::Leafable, leafable_hasher::LeafableHasher, trees::merkle_tree::u64_le_bits,
+    leafable::Leafable, trees::incremental_merkle_tree::IncrementalMerkleProof,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
+    error::HistoricalMerkleTreeError,
     merkle_tree::{HMTResult, HashOut, HistoricalMerkleTree},
     node::NodeDB,
 };
@@ -43,92 +31,88 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>>
         self.0.node_db()
     }
 
-    pub async fn get_leaf(&self, index: u64) -> HMTResult<V> {
-        // get leaf hash
-        let leaf_hash = self.node_db().get_leaf_hash(index).await?;
-        if leaf_hash.is_none() {
-            return Ok(V::empty_leaf());
-        }
-        let leaf = self.node_db().get_leaf_by_hash(leaf_hash.unwrap()).await?;
-        match leaf {
-            Some(leaf) => Ok(leaf),
-            None => Ok(V::empty_leaf()),
-        }
-    }
-
     pub fn get_root(&self) -> HMTResult<HashOut<V>> {
         self.0.get_root()
     }
 
-    pub fn len(&self) -> usize {
-        self.0
+    pub async fn len(&self) -> HMTResult<u32> {
+        let len = self.node_db().num_leaf_hashes().await?;
+        Ok(len)
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.leaves.is_empty()
+    pub async fn is_empty(&self) -> HMTResult<bool> {
+        let len = self.len().await?;
+        Ok(len == 0)
     }
 
-    pub fn update(&mut self, index: u64, leaf: V) {
-        self.0.update_leaf(true, index, leaf.hash());
-        self.leaves[index as usize] = leaf;
+    pub async fn update(&mut self, index: u64, leaf: V) -> HMTResult<()> {
+        self.0.update_leaf(true, index, leaf.hash()).await?;
+        self.node_db().insert_leaf(leaf).await?;
+        Ok(())
     }
 
-    pub fn push(&mut self, leaf: V) {
-        let index = self.leaves.len() as u64;
-        assert!(index < (1u64 << (self.height() as u64)));
-        let leaf_hash = leaf.hash();
-        self.leaves.push(leaf);
-        let index_bits = u64_le_bits(index, self.height());
-        self.merkle_tree.update_leaf(index_bits, leaf_hash);
+    pub async fn push(&mut self, leaf: V) -> HMTResult<()> {
+        let index = self.len().await? as u64;
+        self.0.update_leaf(true, index, leaf.hash()).await?;
+        self.node_db().insert_leaf(leaf).await?;
+        Ok(())
     }
 
-    pub fn pop(&mut self) {
-        assert!(!self.leaves.is_empty());
-        self.leaves.pop();
-        let index = self.leaves.len() as u64;
-        let leaf = V::empty_leaf();
-        let index_bits = u64_le_bits(index, self.height());
-        self.merkle_tree.update_leaf(index_bits, leaf.hash());
+    pub async fn get_leaf_by_root(&self, root: HashOut<V>, index: u64) -> HMTResult<V> {
+        let leaf_hash = self.0.get_leaf_hash_by_root(root, index).await?;
+        let leaf = self.node_db().get_leaf_by_hash(leaf_hash).await?.ok_or(
+            HistoricalMerkleTreeError::LeafNotFoundError(format!("{:?}", leaf_hash)),
+        )?;
+        Ok(leaf)
     }
 
-    pub fn prove(&self, index: u64) -> IncrementalMerkleProof<V> {
-        let index_bits = u64_le_bits(index, self.height());
-        IncrementalMerkleProof(self.merkle_tree.prove(index_bits))
+    pub async fn prove_by_root(
+        &self,
+        root: HashOut<V>,
+        index: u64,
+    ) -> HMTResult<IncrementalMerkleProof<V>> {
+        let (proof, _) = self.0.prove_by_root(root, index).await?;
+        Ok(IncrementalMerkleProof(proof))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        ethereum_types::{
-            bytes32::{Bytes32, Bytes32Target},
-            u32limb_trait::{U32LimbTargetTrait, U32LimbTrait as _},
-        },
-        utils::poseidon_hash_out::PoseidonHashOutTarget,
+    use intmax2_zkp::ethereum_types::{bytes32::Bytes32, u32limb_trait::U32LimbTrait as _};
+    use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig};
+    use rand::Rng;
+    use tracing::level_filters::LevelFilter;
+    use tracing_subscriber::{
+        layer::SubscriberExt, util::SubscriberInitExt as _, EnvFilter, Layer,
     };
 
-    use super::*;
-    use plonky2::{
-        field::types::Field,
-        iop::witness::{PartialWitness, WitnessWrite},
-        plonk::{
-            circuit_data::CircuitConfig,
-            config::{GenericConfig, PoseidonGoldilocksConfig},
-        },
-    };
-    use rand::Rng;
+    use crate::{incremental_merkle_tree::HistoricalIncrementalMerkleTree, node::SqlNodeDB};
 
     const D: usize = 2;
     type C = PoseidonGoldilocksConfig;
     type F = <C as GenericConfig<D>>::F;
 
-    #[test]
-    fn merkle_tree_with_leaves() {
+    #[tokio::test]
+    async fn merkle_tree_with_leaves() -> anyhow::Result<()> {
+        let height = 32;
+        dotenv::dotenv().ok();
+
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer().pretty().with_filter(
+                    EnvFilter::from_default_env().add_directive(LevelFilter::INFO.into()),
+                ),
+            )
+            .try_init()
+            .unwrap();
+
         let mut rng = rand::thread_rng();
-        let height = 10;
+        let database_url = std::env::var("DATABASE_URL")?;
+        let tag = 1;
 
         type V = Bytes32;
-        let mut tree = HistoricalIncrementalMerkleTree::<V>::new(height);
+        let node_db = SqlNodeDB::<V>::new(&database_url, tag).await?;
+        let mut tree = HistoricalIncrementalMerkleTree::new(node_db, height);
 
         for _ in 0..100 {
             let new_leaf = Bytes32::rand(&mut rng);
@@ -142,38 +126,7 @@ mod tests {
             assert_eq!(tree.get_leaf(index), leaf.clone());
             proof.verify(&leaf, index, tree.get_root()).unwrap();
         }
-    }
 
-    #[test]
-    fn merkle_tree_with_leaves_circuit() {
-        let mut rng = rand::thread_rng();
-        let height = 10;
-
-        type V = Bytes32;
-        type VT = Bytes32Target;
-        let mut tree = HistoricalIncrementalMerkleTree::<V>::new(height);
-        for _ in 0..1 << height {
-            let new_leaf = V::rand(&mut rng);
-            tree.push(new_leaf);
-        }
-
-        let index = rng.gen_range(0..1 << height);
-        let leaf = tree.get_leaf(index);
-        let proof = tree.prove(index);
-
-        let mut builder = CircuitBuilder::<F, D>::new(CircuitConfig::default());
-        let proof_t = IncrementalMerkleProofTarget::<VT>::new(&mut builder, height);
-        let leaf_t = VT::new(&mut builder, false);
-        let root_t = PoseidonHashOutTarget::new(&mut builder);
-        let index_t = builder.add_virtual_target();
-        proof_t.verify::<F, C, D>(&mut builder, &leaf_t, index_t, root_t);
-
-        let data = builder.build::<C>();
-        let mut pw = PartialWitness::<F>::new();
-        leaf_t.set_witness(&mut pw, leaf);
-        root_t.set_witness(&mut pw, tree.get_root());
-        pw.set_target(index_t, F::from_canonical_u64(index));
-        proof_t.set_witness(&mut pw, &proof);
-        data.prove(pw).unwrap();
+        Ok(())
     }
 }

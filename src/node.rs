@@ -23,7 +23,7 @@ pub trait NodeDB<V: Leafable + Serialize + DeserializeOwned>: std::fmt::Debug + 
     async fn get(&self, parent_hash: HashOut<V>) -> NodeDBResult<Option<Node<V>>>;
     async fn insert_leaf_hash(&self, position: u64, leaf_hash: HashOut<V>) -> NodeDBResult<()>;
     async fn insert_leaf(&self, leaf: V) -> NodeDBResult<()>;
-    async fn num_leaves(&self) -> NodeDBResult<u32>;
+    async fn num_leaf_hashes(&self) -> NodeDBResult<u32>;
     async fn get_leaf_hash(&self, position: u64) -> NodeDBResult<Option<HashOut<V>>>;
     async fn get_leaf_by_hash(&self, hash: HashOut<V>) -> NodeDBResult<Option<V>>;
     async fn get_all_leaf_hashes(&self) -> NodeDBResult<Vec<(u64, HashOut<V>)>>;
@@ -68,7 +68,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for MockNodeDB<V> {
         Ok(())
     }
 
-    async fn num_leaves(&self) -> NodeDBResult<u32> {
+    async fn num_leaf_hashes(&self) -> NodeDBResult<u32> {
         Ok(self.leaf_hashes.read().await.len() as u32)
     }
 
@@ -211,7 +211,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
         Ok(())
     }
 
-    async fn num_leaves(&self) -> NodeDBResult<u32> {
+    async fn num_leaf_hashes(&self) -> NodeDBResult<u32> {
         let row = sqlx::query!(
             r#"
             SELECT COUNT(*)
@@ -222,7 +222,6 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
         )
         .fetch_one(&self.pool)
         .await?;
-
         Ok(row.count.unwrap_or(0) as u32)
     }
 

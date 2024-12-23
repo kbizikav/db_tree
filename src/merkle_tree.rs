@@ -135,8 +135,7 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         &self,
         root: HashOut<V>,
         index: u64,
-        leaf: HashOut<V>,
-    ) -> HMTResult<MerkleProof<V>> {
+    ) -> HMTResult<(MerkleProof<V>, HashOut<V>)> {
         let mut path = BitPath::new(self.height(), index);
         let mut siblings = vec![];
         let mut hash = root;
@@ -152,14 +151,17 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
             siblings.push(sibling);
             hash = child;
         }
-        if leaf != hash {
-            return Err(HistoricalMerkleTreeError::LeafHashMismatch {
-                expected: format!("{:?}", leaf),
-                got: format!("{:?}", hash),
-            });
-        }
         siblings.reverse();
-        Ok(MerkleProof { siblings })
+        Ok((MerkleProof { siblings }, hash))
+    }
+
+    pub async fn get_leaf_hash_by_root(
+        &self,
+        root: HashOut<V>,
+        index: u64,
+    ) -> HMTResult<HashOut<V>> {
+        let (_, leaf_hash) = self.prove_by_root(root, index).await?;
+        Ok(leaf_hash)
     }
 }
 
@@ -220,16 +222,10 @@ mod test {
             merkle_tree.update_leaf(true, i, leaf.hash()).await?;
         }
         let index = rng.gen_range(0..num_leaves + 10);
+        let (proof, leaf_hash) = merkle_tree.prove_by_root(root1, index).await?;
+
         let leaf = index as u32;
-        assert_eq!(
-            leaf.hash(),
-            merkle_tree
-                .node_db
-                .get_leaf_hash(index)
-                .await?
-                .expect("leaf not found")
-        );
-        let proof = merkle_tree.prove_by_root(root1, index, leaf.hash()).await?;
+        assert_eq!(leaf.hash(), leaf_hash);
         let index_bits = super::u64_le_bits(index, height as usize);
         proof.verify(&leaf, index_bits, root1)?;
 

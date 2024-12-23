@@ -20,6 +20,9 @@ pub enum HistoricalMerkleTreeError {
     #[error("Node not found for parent hash: {0}")]
     NodeNotFoundError(String),
 
+    #[error("Leaf not found for hash: {0}")]
+    LeafNotFoundError(String),
+
     #[error("Leaf hash mismatch: expected {expected}, got {got}")]
     LeafHashMismatch { expected: String, got: String },
 }
