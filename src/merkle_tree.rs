@@ -11,9 +11,9 @@ use crate::{
     node::{Node, NodeDB},
 };
 
-type Hasher<V> = <V as Leafable>::LeafableHasher;
-type HashOut<V> = <Hasher<V> as LeafableHasher>::HashOut;
-type HistoricalMerkleTreeResult<T> = Result<T, HistoricalMerkleTreeError>;
+pub type Hasher<V> = <V as Leafable>::LeafableHasher;
+pub type HashOut<V> = <Hasher<V> as LeafableHasher>::HashOut;
+pub type HMTResult<T> = Result<T, HistoricalMerkleTreeError>;
 
 #[derive(Clone, Debug)]
 pub struct HistoricalMerkleTree<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> {
@@ -24,7 +24,7 @@ pub struct HistoricalMerkleTree<V: Leafable + Serialize + DeserializeOwned, DB: 
 }
 
 impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkleTree<V, DB> {
-    pub async fn new(node_db: DB, height: u32) -> HistoricalMerkleTreeResult<Self> {
+    pub async fn new(node_db: DB, height: u32) -> HMTResult<Self> {
         let zero_hashes = Self::init_zero_hashes(height, &node_db).await?;
         let node_hashes: HashMap<BitPath, HashOut<V>> = HashMap::new();
         Ok(Self {
@@ -35,7 +35,7 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         })
     }
 
-    pub async fn load(&mut self) -> HistoricalMerkleTreeResult<()> {
+    pub async fn load(&mut self) -> HMTResult<()> {
         let time = std::time::Instant::now();
         let leaf_hashes = self.node_db.get_all_leaf_hashes().await?;
         for (index, leaf_hash) in leaf_hashes {
@@ -45,10 +45,11 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         Ok(())
     }
 
-    async fn init_zero_hashes(
-        height: u32,
-        node_db: &DB,
-    ) -> HistoricalMerkleTreeResult<Vec<HashOut<V>>> {
+    pub fn node_db(&self) -> &DB {
+        &self.node_db
+    }
+
+    async fn init_zero_hashes(height: u32, node_db: &DB) -> HMTResult<Vec<HashOut<V>>> {
         // zero_hashes = reverse([H(zero_leaf), H(H(zero_leaf), H(zero_leaf)), ...])
         let mut zero_hashes = vec![];
         let mut h = V::empty_leaf().hash();
@@ -75,11 +76,11 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         self.height
     }
 
-    pub fn get_root(&self) -> HistoricalMerkleTreeResult<HashOut<V>> {
+    pub fn get_root(&self) -> HMTResult<HashOut<V>> {
         self.get_node_hash(BitPath::default())
     }
 
-    fn get_node_hash(&self, path: BitPath) -> HistoricalMerkleTreeResult<HashOut<V>> {
+    fn get_node_hash(&self, path: BitPath) -> HMTResult<HashOut<V>> {
         if path.len() > self.height {
             return Err(HistoricalMerkleTreeError::WrongPathLength(path.len() as u32));
         }
@@ -90,7 +91,7 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         Ok(hash)
     }
 
-    fn get_sibling_hash(&self, path: BitPath) -> HistoricalMerkleTreeResult<HashOut<V>> {
+    fn get_sibling_hash(&self, path: BitPath) -> HMTResult<HashOut<V>> {
         if path.is_empty() {
             return Err(HistoricalMerkleTreeError::WrongPathLength(0));
         }
@@ -102,7 +103,7 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         update_db: bool,
         index: u64,
         leaf_hash: HashOut<V>,
-    ) -> HistoricalMerkleTreeResult<()> {
+    ) -> HMTResult<()> {
         let mut path = BitPath::new(self.height(), index);
         path.reverse();
         let mut h = leaf_hash;
@@ -135,7 +136,7 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         root: HashOut<V>,
         index: u64,
         leaf: HashOut<V>,
-    ) -> HistoricalMerkleTreeResult<MerkleProof<V>> {
+    ) -> HMTResult<MerkleProof<V>> {
         let mut path = BitPath::new(self.height(), index);
         let mut siblings = vec![];
         let mut hash = root;

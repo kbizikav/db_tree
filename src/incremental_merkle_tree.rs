@@ -14,46 +14,54 @@ use plonky2::{
 use intmax2_zkp::utils::{
     leafable::Leafable, leafable_hasher::LeafableHasher, trees::merkle_tree::u64_le_bits,
 };
+use serde::{de::DeserializeOwned, Serialize};
 
-use crate::{merkle_tree::HistoricalMerkleTree, node::NodeDB};
-
+use crate::{
+    merkle_tree::{HMTResult, HashOut, HistoricalMerkleTree},
+    node::NodeDB,
+};
 
 #[derive(Debug, Clone)]
-pub struct HistoricalIncrementalMerkleTree<V: Leafable, DB: NodeDB<V>>(HistoricalMerkleTree<V, DB>);
+pub struct HistoricalIncrementalMerkleTree<
+    V: Leafable + Serialize + DeserializeOwned,
+    DB: NodeDB<V>,
+>(HistoricalMerkleTree<V, DB>);
 
-impl<V: Leafable, DB: NodeDB<V>> HistoricalIncrementalMerkleTree<V> {
-    pub fn new(height: usize) -> Self {
-        let merkle_tree = MerkleTree::new(height, V::empty_leaf().hash());
-        let leaves = vec![];
+impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>>
+    HistoricalIncrementalMerkleTree<V, DB>
+{
+    pub async fn new(node_db: DB, height: u32) -> HMTResult<Self> {
+        let merkle_tree = HistoricalMerkleTree::new(node_db, height).await?;
+        Ok(Self(merkle_tree))
+    }
 
-        Self {
-            merkle_tree,
-            leaves,
+    pub fn height(&self) -> u32 {
+        self.0.height()
+    }
+
+    fn node_db(&self) -> &DB {
+        self.0.node_db()
+    }
+
+    pub async fn get_leaf(&self, index: u64) -> HMTResult<V> {
+        // get leaf hash
+        let leaf_hash = self.node_db().get_leaf_hash(index).await?;
+        if leaf_hash.is_none() {
+            return Ok(V::empty_leaf());
+        }
+        let leaf = self.node_db().get_leaf_by_hash(leaf_hash.unwrap()).await?;
+        match leaf {
+            Some(leaf) => Ok(leaf),
+            None => Ok(V::empty_leaf()),
         }
     }
 
-    pub fn height(&self) -> usize {
-        self.merkle_tree.height()
-    }
-
-    // NOTICE: `None` and `V::empty_leaf()` are treated equivalently.
-    pub fn get_leaf(&self, index: u64) -> V {
-        match self.leaves.get(index as usize) {
-            Some(leaf) => leaf.clone(),
-            None => V::empty_leaf(),
-        }
-    }
-
-    pub fn get_root(&self) -> <V::LeafableHasher as LeafableHasher>::HashOut {
-        self.merkle_tree.get_root()
-    }
-
-    pub fn leaves(&self) -> Vec<V> {
-        self.leaves.clone()
+    pub fn get_root(&self) -> HMTResult<HashOut<V>> {
+        self.0.get_root()
     }
 
     pub fn len(&self) -> usize {
-        self.leaves.len()
+        self.0
     }
 
     pub fn is_empty(&self) -> bool {
@@ -61,8 +69,7 @@ impl<V: Leafable, DB: NodeDB<V>> HistoricalIncrementalMerkleTree<V> {
     }
 
     pub fn update(&mut self, index: u64, leaf: V) {
-        let index_bits = u64_le_bits(index, self.height());
-        self.merkle_tree.update_leaf(index_bits, leaf.hash());
+        self.0.update_leaf(true, index, leaf.hash());
         self.leaves[index as usize] = leaf;
     }
 
