@@ -23,15 +23,15 @@ pub struct HistoricalMerkleTree<V: Leafable, DB: NodeDB<V>> {
 }
 
 impl<V: Leafable, DB: NodeDB<V>> HistoricalMerkleTree<V, DB> {
-    pub async fn new(node_db: DB, height: u32) -> Self {
-        let zero_hashes = Self::init_zero_hashes(height, &node_db).await.unwrap();
+    pub async fn new(node_db: DB, height: u32) -> HistoricalMerkleTreeResult<Self> {
+        let zero_hashes = Self::init_zero_hashes(height, &node_db).await?;
         let node_hashes: HashMap<BitPath, HashOut<V>> = HashMap::new();
-        Self {
+        Ok(Self {
             height,
             node_hashes,
             zero_hashes,
             node_db,
-        }
+        })
     }
 
     pub async fn load(&mut self) -> HistoricalMerkleTreeResult<()> {
@@ -105,7 +105,7 @@ impl<V: Leafable, DB: NodeDB<V>> HistoricalMerkleTree<V, DB> {
         let mut path = BitPath::new(self.height(), index);
         path.reverse();
         let mut h = leaf_hash;
-        self.node_hashes.insert(path.clone(), h.clone()); // leaf node
+        self.node_hashes.insert(path.clone(), h.clone());
 
         while !path.is_empty() {
             let sibling = self.get_sibling_hash(path)?;
@@ -203,7 +203,7 @@ mod test {
 
         let node_db = SqlNodeDB::<Leaf>::new(&database_url).await?;
         // node_db.reset().await?;
-        let mut merkle_tree = HistoricalMerkleTree::new(node_db, height).await;
+        let mut merkle_tree = HistoricalMerkleTree::new(node_db, height).await?;
         merkle_tree.load().await?;
 
         let num_leaves = merkle_tree.node_db.get_all_leaf_hashes().await?.len() as u64;
