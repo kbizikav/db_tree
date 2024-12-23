@@ -1,28 +1,23 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-use intmax2_zkp::utils::{leafable::Leafable, leafable_hasher::LeafableHasher};
+use intmax2_zkp::utils::{
+    leafable::Leafable, leafable_hasher::LeafableHasher, trees::merkle_tree::MerkleProof,
+};
 
 use crate::node::{Node, NodeDB};
 
 type Hasher<V> = <V as Leafable>::LeafableHasher;
 type HashOut<V> = <Hasher<V> as LeafableHasher>::HashOut;
 
-// `MekleTree`` is a structure of Merkle Tree used for `MerkleTreeWithLeaves`
-// and `SparseMerkleTreeWithLeaves`. It only holds non-zero nodes.
-// All nodes are specified by path: Vec<bool>. The path is big endian.
-// Note that this is different from the original plonky2 Merkle Tree which
-// uses little endian path.
 #[derive(Clone, Debug)]
-pub struct MerkleTree<V: Leafable, DB: NodeDB<V>> {
+pub struct HistoricalMerkleTree<V: Leafable, DB: NodeDB<V>> {
     height: usize,
     node_hashes: HashMap<Vec<bool>, HashOut<V>>,
     zero_hashes: Vec<HashOut<V>>,
     node_db: DB,
 }
 
-impl<V: Leafable, DB: NodeDB<V>> MerkleTree<V, DB> {
+impl<V: Leafable, DB: NodeDB<V>> HistoricalMerkleTree<V, DB> {
     pub async fn new(node_db: DB, height: usize) -> Self {
         let zero_hashes = Self::init_zero_hashes(height, &node_db).await.unwrap();
         let node_hashes: HashMap<Vec<bool>, HashOut<V>> = HashMap::new();
@@ -35,10 +30,12 @@ impl<V: Leafable, DB: NodeDB<V>> MerkleTree<V, DB> {
     }
 
     pub async fn load(&mut self) -> anyhow::Result<()> {
+        let time = std::time::Instant::now();
         let leaf_hashes = self.node_db.get_all_leaf_hashes().await?;
         for (index, leaf_hash) in leaf_hashes {
-            self.update_leaf(index, leaf_hash).await;
+            self.update_leaf(false, index, leaf_hash).await;
         }
+        tracing::info!("load time: {:?}", time.elapsed());
         Ok(())
     }
 
@@ -46,7 +43,6 @@ impl<V: Leafable, DB: NodeDB<V>> MerkleTree<V, DB> {
         // zero_hashes = reverse([H(zero_leaf), H(H(zero_leaf), H(zero_leaf)), ...])
         let mut zero_hashes = vec![];
         let mut h = V::empty_leaf().hash();
-        dbg!(&h);
         zero_hashes.push(h.clone());
         for _ in 0..height {
             let new_h = Hasher::<V>::two_to_one(h, h);
@@ -71,16 +67,16 @@ impl<V: Leafable, DB: NodeDB<V>> MerkleTree<V, DB> {
         self.height
     }
 
-    pub fn get_node_hash(&self, path: &Vec<bool>) -> HashOut<V> {
+    pub fn get_root(&self) -> HashOut<V> {
+        self.get_node_hash(&vec![])
+    }
+
+    fn get_node_hash(&self, path: &Vec<bool>) -> HashOut<V> {
         assert!(path.len() <= self.height);
         match self.node_hashes.get(path) {
             Some(h) => h.clone(),
             None => self.zero_hashes[path.len()].clone(),
         }
-    }
-
-    pub fn get_root(&self) -> HashOut<V> {
-        self.get_node_hash(&vec![])
     }
 
     fn get_sibling_hash(&self, path: &Vec<bool>) -> HashOut<V> {
@@ -92,10 +88,9 @@ impl<V: Leafable, DB: NodeDB<V>> MerkleTree<V, DB> {
     }
 
     // index_bits is little endian
-    pub async fn update_leaf(&mut self, index: u64, leaf_hash: HashOut<V>) {
+    pub async fn update_leaf(&mut self, update_db: bool, index: u64, leaf_hash: HashOut<V>) {
         let mut path = u64_le_bits(index, self.height());
         path.reverse();
-
         let mut h = leaf_hash;
         self.node_hashes.insert(path.clone(), h.clone()); // leaf node
 
@@ -115,10 +110,15 @@ impl<V: Leafable, DB: NodeDB<V>> MerkleTree<V, DB> {
             self.node_db.insert(new_h.clone(), node).await.unwrap();
             h = new_h;
         }
-        self.node_db.insert_leaf_hash(index, h).await.unwrap();
+        if update_db {
+            self.node_db
+                .insert_leaf_hash(index, leaf_hash)
+                .await
+                .unwrap();
+        }
     }
 
-    pub async fn prove_with_given_root(
+    pub async fn prove_by_root(
         &self,
         root: HashOut<V>,
         index: u64,
@@ -148,69 +148,6 @@ impl<V: Leafable, DB: NodeDB<V>> MerkleTree<V, DB> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct MerkleProof<V: Leafable> {
-    pub siblings: Vec<HashOut<V>>,
-}
-
-impl<V: Leafable> Serialize for MerkleProof<V>
-where
-    HashOut<V>: Serialize,
-{
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.siblings.serialize(serializer)
-    }
-}
-
-impl<'de, V: Leafable> Deserialize<'de> for MerkleProof<V>
-where
-    HashOut<V>: Deserialize<'de>,
-{
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let siblings = Vec::<HashOut<V>>::deserialize(deserializer)?;
-        Ok(MerkleProof { siblings })
-    }
-}
-
-impl<V: Leafable> MerkleProof<V> {
-    pub fn dummy(height: usize) -> Self {
-        Self {
-            siblings: vec![HashOut::<V>::default(); height],
-        }
-    }
-
-    pub fn height(&self) -> usize {
-        self.siblings.len()
-    }
-
-    pub fn get_root(&self, leaf_data: &V, index: u64) -> HashOut<V> {
-        let mut state = leaf_data.hash();
-        let index_bits = u64_le_bits(index, self.height());
-        for (&bit, sibling) in index_bits.iter().zip(self.siblings.iter()) {
-            state = if bit {
-                Hasher::<V>::two_to_one(*sibling, state)
-            } else {
-                Hasher::<V>::two_to_one(state, *sibling)
-            }
-        }
-        state
-    }
-
-    pub fn verify(&self, leaf_data: &V, index: u64, merkle_root: HashOut<V>) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.get_root(leaf_data, index) == merkle_root,
-            "Merkle proof verification failed"
-        );
-        Ok(())
-    }
-}
-
 pub fn u64_le_bits(num: u64, length: usize) -> Vec<bool> {
     let mut result = Vec::with_capacity(length);
     let mut n = num;
@@ -224,11 +161,13 @@ pub fn u64_le_bits(num: u64, length: usize) -> Vec<bool> {
 #[cfg(test)]
 mod test {
     use intmax2_zkp::utils::leafable::Leafable;
-    use rand::Rng as _;
+    use rand::Rng;
+    use tracing::level_filters::LevelFilter;
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-    use crate::node::{NodeDB, RealDB};
+    use crate::node::{NodeDB, SqlNodeDB};
 
-    use super::MerkleTree;
+    use super::HistoricalMerkleTree;
 
     type Leaf = u32;
 
@@ -237,11 +176,21 @@ mod test {
         let height = 32;
         dotenv::dotenv().ok();
 
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer().pretty().with_filter(
+                    EnvFilter::from_default_env().add_directive(LevelFilter::INFO.into()),
+                ),
+            )
+            .try_init()
+            .unwrap();
+
         let mut rng = rand::thread_rng();
         let database_url = std::env::var("DATABASE_URL").unwrap();
 
-        let node_db = RealDB::<Leaf>::new(&database_url).await.unwrap();
-        let mut merkle_tree = MerkleTree::new(node_db, height).await;
+        let node_db = SqlNodeDB::<Leaf>::new(&database_url).await.unwrap();
+        // node_db.reset().await.unwrap();
+        let mut merkle_tree = HistoricalMerkleTree::new(node_db, height).await;
         merkle_tree.load().await.unwrap();
 
         let num_leaves = merkle_tree
@@ -250,22 +199,28 @@ mod test {
             .await
             .unwrap()
             .len() as u64;
-        println!("num_leaves: {}", num_leaves);
-
-        // for i in num_leaves..num_leaves + 10 {
-        //     let leaf = i as u32;
-        //     merkle_tree.update_leaf(i, leaf.hash()).await;
-        // }
+        for i in num_leaves..num_leaves + 10 {
+            let leaf = i as u32;
+            merkle_tree.update_leaf(true, i, leaf.hash()).await;
+        }
         let root1 = merkle_tree.get_root();
-        // for i in num_leaves + 10..num_leaves + 20 {
-        //     let leaf_hash = PoseidonHashOut::hash_inputs_u32(&[i as u32]);
-        //     merkle_tree.update_leaf(i, leaf_hash).await;
-        // }
-        let index = rng.gen_range(0..num_leaves);
+        for i in num_leaves + 10..num_leaves + 20 {
+            let leaf = i as u32;
+            merkle_tree.update_leaf(true, i, leaf.hash()).await;
+        }
+        let index = rng.gen_range(0..num_leaves + 10);
         let leaf = index as u32;
-        let proof = merkle_tree
-            .prove_with_given_root(root1, index, leaf.hash())
-            .await;
-        proof.verify(&leaf, index, root1).unwrap();
+        assert_eq!(
+            leaf.hash(),
+            merkle_tree
+                .node_db
+                .get_leaf_hash(index)
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        let proof = merkle_tree.prove_by_root(root1, index, leaf.hash()).await;
+        let index_bits = super::u64_le_bits(index, height);
+        proof.verify(&leaf, index_bits, root1).unwrap();
     }
 }
