@@ -27,15 +27,17 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
     pub async fn new(node_db: DB, height: u32) -> HMTResult<Self> {
         let zero_hashes = Self::init_zero_hashes(height, &node_db).await?;
         let node_hashes: HashMap<BitPath, HashOut<V>> = HashMap::new();
-        Ok(Self {
+        let mut s = Self {
             height,
             node_hashes,
             zero_hashes,
             node_db,
-        })
+        };
+        s.load_from_db().await?;
+        Ok(s)
     }
 
-    pub async fn load(&mut self) -> HMTResult<()> {
+    async fn load_from_db(&mut self) -> HMTResult<()> {
         let time = std::time::Instant::now();
         let leaf_hashes = self.node_db.get_all_leaf_hashes().await?;
         for (index, leaf_hash) in leaf_hashes {
@@ -43,10 +45,6 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         }
         tracing::info!("load time: {:?}", time.elapsed());
         Ok(())
-    }
-
-    pub fn node_db(&self) -> &DB {
-        &self.node_db
     }
 
     async fn init_zero_hashes(height: u32, node_db: &DB) -> HMTResult<Vec<HashOut<V>>> {
@@ -69,15 +67,17 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
             h = new_h;
         }
         zero_hashes.reverse();
+
+        // also registor em
         Ok(zero_hashes)
+    }
+
+    pub fn node_db(&self) -> &DB {
+        &self.node_db
     }
 
     pub fn height(&self) -> u32 {
         self.height
-    }
-
-    pub fn get_root(&self) -> HMTResult<HashOut<V>> {
-        self.get_node_hash(BitPath::default())
     }
 
     fn get_node_hash(&self, path: BitPath) -> HMTResult<HashOut<V>> {
@@ -96,6 +96,10 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
             return Err(HistoricalMerkleTreeError::WrongPathLength(0));
         }
         self.get_node_hash(path.sibling())
+    }
+
+    pub fn get_current_root(&self) -> HMTResult<HashOut<V>> {
+        self.get_node_hash(BitPath::default())
     }
 
     pub async fn update_leaf(
@@ -209,14 +213,13 @@ mod test {
         let node_db = SqlNodeDB::<Leaf>::new(&database_url, tag).await?;
         // node_db.reset().await?;
         let mut merkle_tree = HistoricalMerkleTree::new(node_db, height).await?;
-        merkle_tree.load().await?;
 
         let num_leaves = merkle_tree.node_db.get_all_leaf_hashes().await?.len() as u64;
         for i in num_leaves..num_leaves + 10 {
             let leaf = i as u32;
             merkle_tree.update_leaf(true, i, leaf.hash()).await?;
         }
-        let root1 = merkle_tree.get_root()?;
+        let root1 = merkle_tree.get_current_root()?;
         for i in num_leaves + 10..num_leaves + 20 {
             let leaf = i as u32;
             merkle_tree.update_leaf(true, i, leaf.hash()).await?;

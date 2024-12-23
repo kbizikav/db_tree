@@ -33,7 +33,7 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>>
     }
 
     pub fn get_root(&self) -> HMTResult<HashOut<V>> {
-        self.0.get_root()
+        self.0.get_current_root()
     }
 
     pub async fn len(&self) -> HMTResult<u32> {
