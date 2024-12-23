@@ -67,6 +67,25 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>>
         Ok(leaf)
     }
 
+    /// Collect all leaves till the empty leaf is reached.
+    pub async fn get_leaves_by_root(&self, root: HashOut<V>) -> HMTResult<Vec<V>> {
+        let empty_leaf_hash = V::empty_leaf().hash();
+        let mut index = 0;
+        let mut leaves = vec![];
+        loop {
+            let leaf_hash = self.0.get_leaf_hash_by_root(root, index).await?;
+            if leaf_hash == empty_leaf_hash {
+                break;
+            }
+            let leaf = self.node_db().get_leaf_by_hash(leaf_hash).await?.ok_or(
+                HistoricalMerkleTreeError::LeafNotFoundError(format!("{:?}", leaf_hash)),
+            )?;
+            leaves.push(leaf);
+            index += 1;
+        }
+        Ok(leaves)
+    }
+
     pub async fn prove_by_root(
         &self,
         root: HashOut<V>,

@@ -1,3 +1,4 @@
+use intmax2_zkp::ethereum_types::u256::U256;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -25,4 +26,19 @@ pub enum HistoricalMerkleTreeError {
 
     #[error("Leaf hash mismatch: expected {expected}, got {got}")]
     LeafHashMismatch { expected: String, got: String },
+}
+
+#[derive(Error, Debug)]
+pub enum HistoricalIndexedMerkleTreeError {
+    #[error("Historical Merkle Tree Error: {0}")]
+    HistoricalMerkleTreeError(#[from] HistoricalMerkleTreeError),
+
+    #[error("Key does not exist: {0}")]
+    KeyDoesNotExist(U256),
+
+    #[error("Key already exists: {0}")]
+    KeyAlreadyExists(U256),
+
+    #[error("Too many candidates")]
+    TooManyCandidates,
 }
