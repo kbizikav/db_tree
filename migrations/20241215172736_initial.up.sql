@@ -9,6 +9,11 @@ CREATE TABLE IF NOT EXISTS current_leaf_hashes (
     leaf_hash bytea NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS current_leaves (
+    position bigint PRIMARY KEY,
+    leaf bytea NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS root_history (
     i int PRIMARY KEY,
     root bytea NOT NULL

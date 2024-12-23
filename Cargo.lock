@@ -525,6 +525,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "intmax2-zkp",
  "plonky2",
+ "rand",
  "serde",
  "serde_json",
  "sqlx",
