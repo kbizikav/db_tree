@@ -128,29 +128,16 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>>
 mod tests {
     use intmax2_zkp::ethereum_types::{bytes32::Bytes32, u32limb_trait::U32LimbTrait as _};
     use rand::Rng;
-    use tracing::level_filters::LevelFilter;
-    use tracing_subscriber::{
-        layer::SubscriberExt, util::SubscriberInitExt as _, EnvFilter, Layer,
-    };
 
     use crate::{incremental_merkle_tree::HistoricalIncrementalMerkleTree, node::SqlNodeDB};
 
     #[tokio::test]
     async fn merkle_tree_with_leaves() -> anyhow::Result<()> {
         let height = 32;
-        dotenv::dotenv().ok();
-
-        tracing_subscriber::registry()
-            .with(
-                tracing_subscriber::fmt::layer().pretty().with_filter(
-                    EnvFilter::from_default_env().add_directive(LevelFilter::INFO.into()),
-                ),
-            )
-            .try_init()
-            .unwrap();
+        let database_url = crate::setup_test();
 
         let mut rng = rand::thread_rng();
-        let database_url = std::env::var("DATABASE_URL")?;
+
         let tag = 1;
 
         type V = Bytes32;

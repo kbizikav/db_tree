@@ -104,17 +104,4 @@ impl<DB: NodeDB<V>> HistoricalIndexedMerkleTree<DB> {
         let key = self.0.get_leaf_by_root(root, index).await?.key;
         Ok(key)
     }
-
-    // pub fn prove_dummy(&self) -> IndexedInsertionProof {
-    //     let dummy_low_index = 0;
-    //     let prev_low_leaf = self.0.get_leaf(dummy_low_index);
-    //     let dummy_proof = self.0.prove(dummy_low_index);
-    //     IndexedInsertionProof {
-    //         index: 0,
-    //         low_leaf_proof: dummy_proof.clone(),
-    //         leaf_proof: dummy_proof,
-    //         low_leaf_index: dummy_low_index,
-    //         prev_low_leaf,
-    //     }
-    // }
 }

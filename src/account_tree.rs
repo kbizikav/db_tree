@@ -74,8 +74,11 @@ impl<DB: NodeDB<V>> HistoricalAccountTree<DB> {
 
     pub async fn insert(&self, key: U256, value: u64) -> HIMTResult<()> {
         let leaves = self.0.get_current_leaves().await?;
+        dbg!(&leaves);
         let index = self.len().await? as u64;
+        dbg!(index);
         let low_index = self.low_index(&leaves, key).await?;
+        dbg!(low_index);
         let prev_low_leaf = self.0.get_current_leaf(low_index).await?;
         let new_low_leaf = IndexedMerkleLeaf {
             next_index: index,
@@ -148,5 +151,36 @@ impl<DB: NodeDB<V>> HistoricalAccountTree<DB> {
             leaf_index: index,
             prev_leaf,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use intmax2_zkp::utils::trees::indexed_merkle_tree::leaf::IndexedMerkleLeaf;
+
+    use crate::{
+        account_tree::HistoricalAccountTree,
+        node::{MockNodeDB, NodeDB as _, SqlNodeDB},
+    };
+
+    #[tokio::test]
+    async fn test_account_tree() -> anyhow::Result<()> {
+        let database_url = crate::setup_test();
+
+        let tag = 4;
+        let node_db = SqlNodeDB::<IndexedMerkleLeaf>::new(&database_url, tag).await?;
+        node_db.reset().await?;
+
+        let node_db = MockNodeDB::new();
+
+        let account_tree = HistoricalAccountTree::initialize(node_db).await?;
+        for i in 2..5 {
+            println!("inserting {}", i);
+            account_tree.insert(i.into(), i.into()).await?;
+        }
+        // let _root = account_tree.get_current_root().await?;
+        // let _leaves = account_tree.get_current_leaves().await?;
+
+        Ok(())
     }
 }
