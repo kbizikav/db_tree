@@ -105,7 +105,10 @@ mod tests {
         layer::SubscriberExt, util::SubscriberInitExt as _, EnvFilter, Layer,
     };
 
-    use crate::{incremental_merkle_tree::HistoricalIncrementalMerkleTree, node::SqlNodeDB};
+    use crate::{
+        incremental_merkle_tree::HistoricalIncrementalMerkleTree,
+        node::{NodeDB as _, SqlNodeDB},
+    };
 
     #[tokio::test]
     async fn merkle_tree_with_leaves() -> anyhow::Result<()> {
@@ -127,6 +130,7 @@ mod tests {
 
         type V = Bytes32;
         let node_db = SqlNodeDB::<V>::new(&database_url, tag).await?;
+        // node_db.reset().await?;
         let tree = HistoricalIncrementalMerkleTree::new(node_db, height).await?;
 
         for _ in 0..100 {
@@ -145,6 +149,15 @@ mod tests {
             let proof = tree.prove_by_root(root, index).await?;
             proof.verify(&leaf, index, root).unwrap();
         }
+
+        println!("start getting all leaves");
+        let time = std::time::Instant::now();
+        let leaves = tree.get_leaves_by_root(root).await?;
+        println!(
+            "Time to get all {} leaves: {:?}",
+            leaves.len(),
+            time.elapsed()
+        );
 
         Ok(())
     }

@@ -159,7 +159,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
             r#"
             INSERT INTO hash_nodes (tag, parent_hash, left_hash, right_hash)
             VALUES ($1, $2, $3, $4)
-            ON CONFLICT (parent_hash) DO NOTHING
+            ON CONFLICT (tag, parent_hash) DO NOTHING
             "#,
             self.tag as i32,
             serialized_parent as _,
@@ -212,9 +212,8 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
             r#"
             INSERT INTO current_node_hashes (tag, bit_path, hash_value)
             VALUES ($1, $2, $3)
-            ON CONFLICT (bit_path) DO UPDATE 
-            SET hash_value = EXCLUDED.hash_value,
-            tag = EXCLUDED.tag
+            ON CONFLICT (tag, bit_path) DO UPDATE 
+            SET hash_value = EXCLUDED.hash_value  
             "#,
             self.tag as i32,
             serialized_bit_path as _,
@@ -255,7 +254,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
             r#"
             INSERT INTO current_leaf_hashes (tag, position, leaf_hash)
             VALUES ($1, $2, $3)
-            ON CONFLICT (position) DO NOTHING
+            ON CONFLICT (tag, position) DO NOTHING
             "#,
             self.tag as i32,
             position as i64,
@@ -276,7 +275,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
             r#"
             INSERT INTO leaves (tag, leaf_hash, leaf)
             VALUES ($1, $2, $3)
-            ON CONFLICT (leaf_hash) DO NOTHING
+            ON CONFLICT (tag, leaf_hash) DO NOTHING
             "#,
             self.tag as i32,
             serialized_hash as _,
@@ -373,17 +372,25 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
     }
 
     async fn reset(&self) -> NodeDBResult<()> {
-        sqlx::query!("TRUNCATE leaves").execute(&self.pool).await?;
-
-        sqlx::query!("TRUNCATE current_node_hashes")
+        sqlx::query!("DELETE FROM hash_nodes WHERE tag = $1", self.tag as i32)
             .execute(&self.pool)
             .await?;
 
-        sqlx::query!("TRUNCATE hash_nodes")
-            .execute(&self.pool)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM current_node_hashes WHERE tag = $1",
+            self.tag as i32
+        )
+        .execute(&self.pool)
+        .await?;
 
-        sqlx::query!("TRUNCATE current_leaf_hashes")
+        sqlx::query!(
+            "DELETE FROM current_leaf_hashes WHERE tag = $1",
+            self.tag as i32
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query!("DELETE FROM leaves WHERE tag = $1", self.tag as i32)
             .execute(&self.pool)
             .await?;
 
