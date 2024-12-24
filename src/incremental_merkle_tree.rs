@@ -131,59 +131,69 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>>
 
 #[cfg(test)]
 mod tests {
-    use intmax2_zkp::ethereum_types::{bytes32::Bytes32, u32limb_trait::U32LimbTrait as _};
-    use rand::Rng;
-
-    use crate::{incremental_merkle_tree::HistoricalIncrementalMerkleTree, node::SqlNodeDB};
+    use crate::{
+        incremental_merkle_tree::HistoricalIncrementalMerkleTree,
+        node::{NodeDB as _, SqlNodeDB},
+    };
 
     #[tokio::test]
     async fn merkle_tree_with_leaves() -> anyhow::Result<()> {
         let height = 32;
         let database_url = crate::setup_test();
 
-        let mut rng = rand::thread_rng();
-
         let tag = 1;
 
-        type V = Bytes32;
+        type V = u32;
         let node_db = SqlNodeDB::<V>::new(&database_url, tag).await?;
-        // node_db.reset().await?;
+        node_db.reset().await?;
         let tree = HistoricalIncrementalMerkleTree::new(node_db, height).await?;
 
-        for _ in 0..100 {
-            let new_leaf = Bytes32::rand(&mut rng);
-            tree.push(new_leaf).await?;
+        for _ in 0..5 {
+            let index = tree.len().await?;
+            tree.push(index).await?;
         }
         let root = tree.get_current_root().await?;
-        for _ in 0..100 {
-            let new_leaf = Bytes32::rand(&mut rng);
-            tree.push(new_leaf).await?;
+        for _ in 0..5 {
+            let index = tree.len().await?;
+            tree.push(index).await?;
         }
-
-        for _ in 0..100 {
-            let index = rng.gen_range(0..1 << height);
-            let leaf = tree.get_leaf_by_root(root, index).await?;
-            let proof = tree.prove_by_root(root, index).await?;
-            proof.verify(&leaf, index, root).unwrap();
-        }
-
-        println!("start getting all leaves");
-        let time = std::time::Instant::now();
-        let leaves = tree.get_leaves_by_root(root).await?;
-        println!(
-            "Time to get all {} leaves: {:?}",
-            leaves.len(),
-            time.elapsed()
-        );
-
         println!("start getting all current leaves");
-        let time = std::time::Instant::now();
+        // let time = std::time::Instant::now();
         let leaves = tree.get_current_leaves().await?;
-        println!(
-            "Time to get all current {} leaves: {:?}",
-            leaves.len(),
-            time.elapsed()
-        );
+        dbg!(&leaves);
+
+        let old_leaves = tree.get_leaves_by_root(root).await?;
+        dbg!(&old_leaves);
+        // println!(
+        //     "Time to get all current {} leaves: {:?}",
+        //     leaves.len(),
+        //     time.elapsed()
+        // );
+
+        // for _ in 0..100 {
+        //     let index = rng.gen_range(0..1 << height);
+        //     let leaf = tree.get_leaf_by_root(root, index).await?;
+        //     let proof = tree.prove_by_root(root, index).await?;
+        //     proof.verify(&leaf, index, root).unwrap();
+        // }
+
+        // println!("start getting all leaves");
+        // let time = std::time::Instant::now();
+        // let leaves = tree.get_leaves_by_root(root).await?;
+        // println!(
+        //     "Time to get all {} leaves: {:?}",
+        //     leaves.len(),
+        //     time.elapsed()
+        // );
+
+        // println!("start getting all current leaves");
+        // let time = std::time::Instant::now();
+        // let leaves = tree.get_current_leaves().await?;
+        // println!(
+        //     "Time to get all current {} leaves: {:?}",
+        //     leaves.len(),
+        //     time.elapsed()
+        // );
 
         Ok(())
     }

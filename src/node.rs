@@ -111,13 +111,15 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for MockNodeDB<V> {
     }
 
     async fn get_all_leaf_hashes(&self) -> NodeDBResult<Vec<(u64, HashOut<V>)>> {
-        Ok(self
+        let mut leaves: Vec<(u64, HashOut<V>)> = self
             .leaf_hashes
             .read()
             .await
             .iter()
             .map(|(position, leaf_hash)| (*position, *leaf_hash))
-            .collect())
+            .collect();
+        leaves.sort_by_key(|(position, _)| *position);
+        Ok(leaves)
     }
 
     async fn reset(&self) -> NodeDBResult<()> {
@@ -254,7 +256,8 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
             r#"
             INSERT INTO current_leaf_hashes (tag, position, leaf_hash)
             VALUES ($1, $2, $3)
-            ON CONFLICT (tag, position) DO NOTHING
+            ON CONFLICT (tag, position) 
+            DO UPDATE SET leaf_hash = EXCLUDED.leaf_hash
             "#,
             self.tag as i32,
             position as i64,

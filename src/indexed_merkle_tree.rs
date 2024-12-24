@@ -68,7 +68,6 @@ impl<DB: NodeDB<V>> HistoricalIndexedMerkleTree<DB> {
     }
 
     pub async fn low_index(&self, leaves: &[V], key: U256) -> HIMTResult<u64> {
-        dbg!(&leaves);
         let low_leaf_candidates = leaves
             .into_iter()
             .enumerate()

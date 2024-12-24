@@ -74,11 +74,8 @@ impl<DB: NodeDB<V>> HistoricalAccountTree<DB> {
 
     pub async fn insert(&self, key: U256, value: u64) -> HIMTResult<()> {
         let leaves = self.0.get_current_leaves().await?;
-        dbg!(&leaves);
         let index = self.len().await? as u64;
-        dbg!(index);
         let low_index = self.low_index(&leaves, key).await?;
-        dbg!(low_index);
         let prev_low_leaf = self.0.get_current_leaf(low_index).await?;
         let new_low_leaf = IndexedMerkleLeaf {
             next_index: index,
@@ -170,12 +167,27 @@ mod tests {
         let tag = 4;
         let node_db = SqlNodeDB::<IndexedMerkleLeaf>::new(&database_url, tag).await?;
         node_db.reset().await?;
-        let node_db = crate::node::MockNodeDB::new();
+        // let node_db = crate::node::MockNodeDB::new();
 
         let account_tree = HistoricalAccountTree::initialize(node_db).await?;
-        let leaves = account_tree.get_current_leaves().await?;
 
-        dbg!(&leaves);
+        for i in 2..5 {
+            account_tree.insert(i.into(), i.into()).await?;
+        }
+        let old_root = account_tree.get_current_root().await?;
+        let old_leaves = account_tree.get_current_leaves().await?;
+        for i in 5..8 {
+            account_tree.insert(i.into(), i.into()).await?;
+        }
+        let leaves = account_tree.get_leaves_by_root(old_root).await?;
+        assert_eq!(leaves, old_leaves);
+
+        let account_id = 3;
+        let proof = account_tree
+            .prove_inclusion_by_root(old_root, account_id)
+            .await?;
+        let result = proof.verify(old_root, account_id, (account_id as u32).into());
+        assert!(result);
 
         Ok(())
     }
