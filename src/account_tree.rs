@@ -160,7 +160,7 @@ mod tests {
 
     use crate::{
         account_tree::HistoricalAccountTree,
-        node::{MockNodeDB, NodeDB as _, SqlNodeDB},
+        node::{NodeDB as _, SqlNodeDB},
     };
 
     #[tokio::test]
@@ -171,15 +171,10 @@ mod tests {
         let node_db = SqlNodeDB::<IndexedMerkleLeaf>::new(&database_url, tag).await?;
         node_db.reset().await?;
 
-        let node_db = MockNodeDB::new();
+        // let node_db = crate::node::MockNodeDB::new();
 
         let account_tree = HistoricalAccountTree::initialize(node_db).await?;
-        for i in 2..5 {
-            println!("inserting {}", i);
-            account_tree.insert(i.into(), i.into()).await?;
-        }
-        // let _root = account_tree.get_current_root().await?;
-        // let _leaves = account_tree.get_current_leaves().await?;
+        let leaves = account_tree.get_current_leaves().await?;
 
         Ok(())
     }

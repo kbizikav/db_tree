@@ -39,6 +39,7 @@ impl<DB: NodeDB<V>> HistoricalIndexedMerkleTree<DB> {
 
     pub async fn get_leaves_by_root(&self, root: HashOut<V>) -> HIMTResult<Vec<IndexedMerkleLeaf>> {
         let leaves = self.0.get_leaves_by_root(root).await?;
+
         Ok(leaves)
     }
 
@@ -67,6 +68,7 @@ impl<DB: NodeDB<V>> HistoricalIndexedMerkleTree<DB> {
     }
 
     pub async fn low_index(&self, leaves: &[V], key: U256) -> HIMTResult<u64> {
+        dbg!(&leaves);
         let low_leaf_candidates = leaves
             .into_iter()
             .enumerate()
