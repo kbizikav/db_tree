@@ -1,6 +1,5 @@
 use intmax2_zkp::utils::{
-    leafable::Leafable,
-    trees::{incremental_merkle_tree::IncrementalMerkleProof, indexed_merkle_tree::leaf},
+    leafable::Leafable, trees::incremental_merkle_tree::IncrementalMerkleProof,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
