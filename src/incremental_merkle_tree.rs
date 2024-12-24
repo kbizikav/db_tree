@@ -32,7 +32,7 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>>
         self.0.node_db()
     }
 
-    pub async fn get_root(&self) -> HMTResult<HashOut<V>> {
+    pub async fn get_current_root(&self) -> HMTResult<HashOut<V>> {
         self.0.get_current_root().await
     }
 
@@ -162,7 +162,7 @@ mod tests {
             let new_leaf = Bytes32::rand(&mut rng);
             tree.push(new_leaf).await?;
         }
-        let root = tree.get_root().await?;
+        let root = tree.get_current_root().await?;
         for _ in 0..100 {
             let new_leaf = Bytes32::rand(&mut rng);
             tree.push(new_leaf).await?;

@@ -52,6 +52,11 @@ impl<DB: NodeDB<V>> HistoricalIndexedMerkleTree<DB> {
         Ok(leaves)
     }
 
+    pub async fn get_current_root(&self) -> HIMTResult<HashOut<V>> {
+        let root = self.0.get_current_root().await?;
+        Ok(root)
+    }
+
     pub async fn prove_by_root(
         &self,
         root: HashOut<V>,

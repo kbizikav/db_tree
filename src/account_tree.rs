@@ -114,12 +114,12 @@ impl<DB: NodeDB<V>> HistoricalAccountTree<DB> {
             value,
         };
 
-        let root = self.0.get_root().await?;
+        let root = self.0.get_current_root().await?;
         let low_leaf_proof = self.0.prove_by_root(root, low_index).await?;
         self.0.update(low_index, new_low_leaf).await?;
         self.0.push(leaf).await?;
 
-        let root = self.0.get_root().await?;
+        let root = self.0.get_current_root().await?;
         let leaf_proof = self.0.prove_by_root(root, index).await?;
         Ok(IndexedInsertionProof {
             index,
@@ -142,7 +142,7 @@ impl<DB: NodeDB<V>> HistoricalAccountTree<DB> {
             ..prev_leaf
         };
         self.0.update(index, new_leaf).await?;
-        let root = self.0.get_root().await?;
+        let root = self.0.get_current_root().await?;
         Ok(UpdateProof {
             leaf_proof: self.prove_by_root(root, index).await?,
             leaf_index: index,

@@ -7,4 +7,4 @@ pub mod incremental_merkle_tree;
 pub mod indexed_merkle_tree;
 pub mod merkle_tree;
 pub mod node;
-// pub mod utils;
+pub mod utils;
