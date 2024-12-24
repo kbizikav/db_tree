@@ -170,11 +170,12 @@ mod tests {
         let tag = 4;
         let node_db = SqlNodeDB::<IndexedMerkleLeaf>::new(&database_url, tag).await?;
         node_db.reset().await?;
-
-        // let node_db = crate::node::MockNodeDB::new();
+        let node_db = crate::node::MockNodeDB::new();
 
         let account_tree = HistoricalAccountTree::initialize(node_db).await?;
         let leaves = account_tree.get_current_leaves().await?;
+
+        dbg!(&leaves);
 
         Ok(())
     }
