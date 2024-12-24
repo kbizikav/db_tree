@@ -1,7 +1,14 @@
 use anyhow::ensure;
 use intmax2_zkp::{
-    common::witness::{block_witness::BlockWitness, full_block::FullBlock},
-    constants::NUM_SENDERS_IN_BLOCK,
+    common::{
+        trees::{account_tree::AccountRegistrationProof, sender_tree::get_sender_leaves},
+        witness::{
+            block_witness::BlockWitness, full_block::FullBlock,
+            validity_transition_witness::ValidityTransitionWitness,
+            validity_witness::ValidityWitness,
+        },
+    },
+    constants::{ACCOUNT_TREE_HEIGHT, NUM_SENDERS_IN_BLOCK},
     ethereum_types::{account_id_packed::AccountIdPacked, bytes32::Bytes32, u256::U256},
     utils::trees::indexed_merkle_tree::leaf::IndexedMerkleLeaf,
 };
@@ -77,4 +84,95 @@ pub async fn to_block_witness<ADB: NodeDB<IndexedMerkleLeaf>, BDB: NodeDB<Bytes3
         account_membership_proofs,
     };
     Ok(block_witness)
+}
+
+pub async fn update_trees<ADB: NodeDB<IndexedMerkleLeaf>, BDB: NodeDB<Bytes32>>(
+    block_witness: &BlockWitness,
+    account_tree: &HistoricalAccountTree<ADB>,
+    block_tree: &HistoricalBlockHashTree<BDB>,
+) -> anyhow::Result<ValidityWitness> {
+    let block_pis = block_witness.to_main_validation_pis().map_err(|e| {
+        anyhow::anyhow!("failed to convert to main validation public inputs: {}", e)
+    })?;
+    ensure!(
+        block_pis.block_number == block_tree.len().await? as u32,
+        "block number mismatch"
+    );
+
+    // Update block tree
+    let root = block_tree.get_current_root().await?;
+    let block_merkle_proof = block_tree
+        .prove_by_root(root, block_witness.block.block_number as u64)
+        .await?;
+    block_tree.push(block_witness.block.hash()).await?;
+
+    // Update account tree
+    let sender_leaves =
+        get_sender_leaves(&block_witness.pubkeys, block_witness.signature.sender_flag);
+    let account_registration_proofs = {
+        if block_pis.is_valid && block_pis.is_registration_block {
+            let mut account_registration_proofs = Vec::new();
+            for sender_leaf in &sender_leaves {
+                let last_block_number = if sender_leaf.did_return_sig {
+                    block_pis.block_number
+                } else {
+                    0
+                };
+                let is_dummy_pubkey = sender_leaf.sender.is_dummy_pubkey();
+                let proof = if is_dummy_pubkey {
+                    AccountRegistrationProof::dummy(ACCOUNT_TREE_HEIGHT)
+                } else {
+                    account_tree
+                        .prove_and_insert(sender_leaf.sender, last_block_number as u64)
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to prove and insert account_tree: {}", e)
+                        })?
+                };
+                account_registration_proofs.push(proof);
+            }
+            Some(account_registration_proofs)
+        } else {
+            None
+        }
+    };
+
+    let account_update_proofs = {
+        if block_pis.is_valid && (!block_pis.is_registration_block) {
+            let mut account_update_proofs = Vec::new();
+            let block_number = block_pis.block_number;
+            for sender_leaf in sender_leaves.iter() {
+                let leaves = account_tree.get_current_leaves().await?;
+                let account_id = account_tree
+                    .index(&leaves, sender_leaf.sender)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("failed to get index from account_tree",))?;
+                let prev_leaf = account_tree.get_current_leaf(account_id).await?;
+                let prev_last_block_number = prev_leaf.value as u32;
+                let last_block_number = if sender_leaf.did_return_sig {
+                    block_number
+                } else {
+                    prev_last_block_number
+                };
+                let proof = account_tree
+                    .prove_and_update(sender_leaf.sender, last_block_number as u64)
+                    .await?;
+                account_update_proofs.push(proof);
+            }
+            Some(account_update_proofs)
+        } else {
+            None
+        }
+    };
+
+    let validity_transition_witness = ValidityTransitionWitness {
+        sender_leaves,
+        block_merkle_proof,
+        account_registration_proofs,
+        account_update_proofs,
+    };
+    Ok(ValidityWitness {
+        validity_transition_witness,
+        block_witness: block_witness.clone(),
+    })
 }

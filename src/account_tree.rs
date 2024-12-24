@@ -94,7 +94,7 @@ impl<DB: NodeDB<V>> HistoricalAccountTree<DB> {
     }
 
     pub async fn prove_and_insert(
-        &mut self,
+        &self,
         key: U256,
         value: u64,
     ) -> HIMTResult<IndexedInsertionProof> {
