@@ -32,8 +32,8 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>>
         self.0.node_db()
     }
 
-    pub fn get_root(&self) -> HMTResult<HashOut<V>> {
-        self.0.get_current_root()
+    pub async fn get_root(&self) -> HMTResult<HashOut<V>> {
+        self.0.get_current_root().await
     }
 
     pub async fn len(&self) -> HMTResult<u32> {
@@ -46,15 +46,15 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>>
         Ok(len == 0)
     }
 
-    pub async fn update(&mut self, index: u64, leaf: V) -> HMTResult<()> {
-        self.0.update_leaf(true, index, leaf.hash()).await?;
+    pub async fn update(&self, index: u64, leaf: V) -> HMTResult<()> {
+        self.0.update_leaf(index, leaf.hash()).await?;
         self.node_db().insert_leaf(leaf).await?;
         Ok(())
     }
 
-    pub async fn push(&mut self, leaf: V) -> HMTResult<()> {
+    pub async fn push(&self, leaf: V) -> HMTResult<()> {
         let index = self.len().await? as u64;
-        self.0.update_leaf(true, index, leaf.hash()).await?;
+        self.0.update_leaf(index, leaf.hash()).await?;
         self.node_db().insert_leaf(leaf).await?;
         Ok(())
     }
@@ -127,13 +127,13 @@ mod tests {
 
         type V = Bytes32;
         let node_db = SqlNodeDB::<V>::new(&database_url, tag).await?;
-        let mut tree = HistoricalIncrementalMerkleTree::new(node_db, height).await?;
+        let tree = HistoricalIncrementalMerkleTree::new(node_db, height).await?;
 
         for _ in 0..100 {
             let new_leaf = Bytes32::rand(&mut rng);
             tree.push(new_leaf).await?;
         }
-        let root = tree.get_root()?;
+        let root = tree.get_root().await?;
         for _ in 0..100 {
             let new_leaf = Bytes32::rand(&mut rng);
             tree.push(new_leaf).await?;

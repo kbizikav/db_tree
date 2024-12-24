@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use intmax2_zkp::utils::{
     leafable::Leafable, leafable_hasher::LeafableHasher, trees::merkle_tree::MerkleProof,
 };
@@ -18,7 +16,6 @@ pub type HMTResult<T> = Result<T, HistoricalMerkleTreeError>;
 #[derive(Clone, Debug)]
 pub struct HistoricalMerkleTree<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> {
     height: u32,
-    node_hashes: HashMap<BitPath, HashOut<V>>,
     zero_hashes: Vec<HashOut<V>>,
     node_db: DB,
 }
@@ -26,25 +23,11 @@ pub struct HistoricalMerkleTree<V: Leafable + Serialize + DeserializeOwned, DB: 
 impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkleTree<V, DB> {
     pub async fn new(node_db: DB, height: u32) -> HMTResult<Self> {
         let zero_hashes = Self::init_zero_hashes(height, &node_db).await?;
-        let node_hashes: HashMap<BitPath, HashOut<V>> = HashMap::new();
-        let mut s = Self {
+        Ok(Self {
             height,
-            node_hashes,
             zero_hashes,
             node_db,
-        };
-        s.load_from_db().await?;
-        Ok(s)
-    }
-
-    async fn load_from_db(&mut self) -> HMTResult<()> {
-        let time = std::time::Instant::now();
-        let leaf_hashes = self.node_db.get_all_leaf_hashes().await?;
-        for (index, leaf_hash) in leaf_hashes {
-            self.update_leaf(false, index, leaf_hash).await?;
-        }
-        tracing::info!("load time: {:?}", time.elapsed());
-        Ok(())
+        })
     }
 
     async fn init_zero_hashes(height: u32, node_db: &DB) -> HMTResult<Vec<HashOut<V>>> {
@@ -68,7 +51,6 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         }
         zero_hashes.reverse();
 
-        // also registor em
         Ok(zero_hashes)
     }
 
@@ -80,44 +62,39 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         self.height
     }
 
-    fn get_node_hash(&self, path: BitPath) -> HMTResult<HashOut<V>> {
+    async fn get_node_hash(&self, path: BitPath) -> HMTResult<HashOut<V>> {
         if path.len() > self.height {
             return Err(HistoricalMerkleTreeError::WrongPathLength(path.len() as u32));
         }
-        let hash = match self.node_hashes.get(&path) {
+        let hash = match self.node_db().get_current_node_hash(path).await? {
             Some(h) => h.clone(),
             None => self.zero_hashes[path.len() as usize].clone(),
         };
         Ok(hash)
     }
 
-    fn get_sibling_hash(&self, path: BitPath) -> HMTResult<HashOut<V>> {
+    async fn get_sibling_hash(&self, path: BitPath) -> HMTResult<HashOut<V>> {
         if path.is_empty() {
             return Err(HistoricalMerkleTreeError::WrongPathLength(0));
         }
-        self.get_node_hash(path.sibling())
+        self.get_node_hash(path.sibling()).await
     }
 
-    pub async fn update_leaf(
-        &mut self,
-        update_db: bool,
-        index: u64,
-        leaf_hash: HashOut<V>,
-    ) -> HMTResult<()> {
+    pub async fn update_leaf(&self, index: u64, leaf_hash: HashOut<V>) -> HMTResult<()> {
         let mut path = BitPath::new(self.height(), index);
         path.reverse();
         let mut h = leaf_hash;
-        self.node_hashes.insert(path.clone(), h.clone());
+        self.node_db.insert_current_node_hash(path, h).await?;
 
         while !path.is_empty() {
-            let sibling = self.get_sibling_hash(path)?;
+            let sibling = self.get_sibling_hash(path).await?;
             let b = path.pop().unwrap(); // safe to unwrap
             let new_h = if b {
                 Hasher::<V>::two_to_one(sibling, h)
             } else {
                 Hasher::<V>::two_to_one(h, sibling)
             };
-            self.node_hashes.insert(path.clone(), new_h.clone());
+            self.node_db.insert_current_node_hash(path, new_h).await?;
             let node = Node {
                 left_hash: if b { sibling } else { h.clone() },
                 right_hash: if b { h.clone() } else { sibling },
@@ -125,9 +102,9 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
             self.node_db.insert_node(new_h.clone(), node).await?;
             h = new_h;
         }
-        if update_db {
-            self.node_db.insert_leaf_hash(index, leaf_hash).await?;
-        }
+
+        self.node_db.insert_leaf_hash(index, leaf_hash).await?;
+
         Ok(())
     }
 
@@ -155,8 +132,8 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         Ok((MerkleProof { siblings }, hash))
     }
 
-    pub fn get_current_root(&self) -> HMTResult<HashOut<V>> {
-        self.get_node_hash(BitPath::default())
+    pub async fn get_current_root(&self) -> HMTResult<HashOut<V>> {
+        self.get_node_hash(BitPath::default()).await
     }
 
     pub async fn get_leaf_hash_by_root(
@@ -186,7 +163,7 @@ mod test {
     use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-    use crate::node::{NodeDB, SqlNodeDB};
+    use crate::node::{MockNodeDB, NodeDB, SqlNodeDB};
 
     use super::HistoricalMerkleTree;
 
@@ -210,19 +187,21 @@ mod test {
         let database_url = std::env::var("DATABASE_URL")?;
         let tag = 0;
 
+        // let node_db = MockNodeDB::<Leaf>::new();
         let node_db = SqlNodeDB::<Leaf>::new(&database_url, tag).await?;
         // node_db.reset().await?;
-        let mut merkle_tree = HistoricalMerkleTree::new(node_db, height).await?;
+        let merkle_tree = HistoricalMerkleTree::new(node_db, height).await?;
 
         let num_leaves = merkle_tree.node_db.get_all_leaf_hashes().await?.len() as u64;
+        println!("num_leaves: {}", num_leaves);
         for i in num_leaves..num_leaves + 10 {
             let leaf = i as u32;
-            merkle_tree.update_leaf(true, i, leaf.hash()).await?;
+            merkle_tree.update_leaf(i, leaf.hash()).await?;
         }
-        let root1 = merkle_tree.get_current_root()?;
+        let root1 = merkle_tree.get_current_root().await?;
         for i in num_leaves + 10..num_leaves + 20 {
             let leaf = i as u32;
-            merkle_tree.update_leaf(true, i, leaf.hash()).await?;
+            merkle_tree.update_leaf(i, leaf.hash()).await?;
         }
         let index = rng.gen_range(0..num_leaves + 10);
         let (proof, leaf_hash) = merkle_tree.prove_by_root(root1, index).await?;

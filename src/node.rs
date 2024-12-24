@@ -201,11 +201,6 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
         }
     }
 
-    // CREATE TABLE IF NOT EXISTS current_node_hashes (
-    //     tag int NOT NULL,
-    //     bit_path bytea PRIMARY KEY,
-    //     hash_value bytea NOT NULL
-    // );
     async fn insert_current_node_hash(
         &self,
         bit_path: BitPath,
@@ -217,7 +212,9 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
             r#"
             INSERT INTO current_node_hashes (tag, bit_path, hash_value)
             VALUES ($1, $2, $3)
-            ON CONFLICT (bit_path) DO NOTHING
+            ON CONFLICT (bit_path) DO UPDATE 
+            SET hash_value = EXCLUDED.hash_value,
+            tag = EXCLUDED.tag
             "#,
             self.tag as i32,
             serialized_bit_path as _,
@@ -376,6 +373,12 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
     }
 
     async fn reset(&self) -> NodeDBResult<()> {
+        sqlx::query!("TRUNCATE leaves").execute(&self.pool).await?;
+
+        sqlx::query!("TRUNCATE current_node_hashes")
+            .execute(&self.pool)
+            .await?;
+
         sqlx::query!("TRUNCATE hash_nodes")
             .execute(&self.pool)
             .await?;
