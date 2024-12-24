@@ -163,7 +163,7 @@ mod test {
     use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-    use crate::node::{MockNodeDB, NodeDB, SqlNodeDB};
+    use crate::node::{NodeDB, SqlNodeDB};
 
     use super::HistoricalMerkleTree;
 

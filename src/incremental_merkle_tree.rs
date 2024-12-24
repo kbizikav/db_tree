@@ -1,5 +1,6 @@
 use intmax2_zkp::utils::{
-    leafable::Leafable, trees::incremental_merkle_tree::IncrementalMerkleProof,
+    leafable::Leafable,
+    trees::{incremental_merkle_tree::IncrementalMerkleProof, indexed_merkle_tree::leaf},
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -86,6 +87,34 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>>
         Ok(leaves)
     }
 
+    pub async fn get_current_leaf(&self, index: u64) -> HMTResult<V> {
+        let leaf_hash = self.node_db().get_leaf_hash(index).await?;
+        match leaf_hash {
+            Some(leaf_hash) => {
+                let leaf = self.node_db().get_leaf_by_hash(leaf_hash).await?.ok_or(
+                    HistoricalMerkleTreeError::LeafNotFoundError(format!("{:?}", leaf_hash)),
+                )?;
+                Ok(leaf)
+            }
+            None => Err(HistoricalMerkleTreeError::LeafNotFoundError(format!(
+                "{:?}",
+                index
+            ))),
+        }
+    }
+
+    pub async fn get_current_leaves(&self) -> HMTResult<Vec<V>> {
+        let leaf_hashes = self.node_db().get_all_leaf_hashes().await?;
+        let mut leaves = vec![];
+        for (_, leaf_hash) in leaf_hashes {
+            let leaf = self.node_db().get_leaf_by_hash(leaf_hash).await?.ok_or(
+                HistoricalMerkleTreeError::LeafNotFoundError(format!("{:?}", leaf_hash)),
+            )?;
+            leaves.push(leaf);
+        }
+        Ok(leaves)
+    }
+
     pub async fn prove_by_root(
         &self,
         root: HashOut<V>,
@@ -105,10 +134,7 @@ mod tests {
         layer::SubscriberExt, util::SubscriberInitExt as _, EnvFilter, Layer,
     };
 
-    use crate::{
-        incremental_merkle_tree::HistoricalIncrementalMerkleTree,
-        node::{NodeDB as _, SqlNodeDB},
-    };
+    use crate::{incremental_merkle_tree::HistoricalIncrementalMerkleTree, node::SqlNodeDB};
 
     #[tokio::test]
     async fn merkle_tree_with_leaves() -> anyhow::Result<()> {
@@ -155,6 +181,15 @@ mod tests {
         let leaves = tree.get_leaves_by_root(root).await?;
         println!(
             "Time to get all {} leaves: {:?}",
+            leaves.len(),
+            time.elapsed()
+        );
+
+        println!("start getting all current leaves");
+        let time = std::time::Instant::now();
+        let leaves = tree.get_current_leaves().await?;
+        println!(
+            "Time to get all current {} leaves: {:?}",
             leaves.len(),
             time.elapsed()
         );
