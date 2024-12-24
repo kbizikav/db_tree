@@ -8,7 +8,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::{
     bit_path::BitPath,
     error::HistoricalMerkleTreeError,
-    node::{Node, NodeDB},
+    node::{NodeDB, NodeElement},
 };
 
 pub type Hasher<V> = <V as Leafable>::LeafableHasher;
@@ -56,9 +56,9 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
             let new_h = Hasher::<V>::two_to_one(h, h);
             zero_hashes.push(new_h);
             node_db
-                .insert(
+                .insert_node(
                     new_h,
-                    Node {
+                    NodeElement {
                         left_hash: h,
                         right_hash: h,
                     },
@@ -118,11 +118,11 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
                 Hasher::<V>::two_to_one(h, sibling)
             };
             self.node_hashes.insert(path.clone(), new_h.clone());
-            let node = Node {
+            let node = NodeElement {
                 left_hash: if b { sibling } else { h.clone() },
                 right_hash: if b { h.clone() } else { sibling },
             };
-            self.node_db.insert(new_h.clone(), node).await?;
+            self.node_db.insert_node(new_h.clone(), node).await?;
             h = new_h;
         }
         if update_db {
