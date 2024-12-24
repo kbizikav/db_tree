@@ -1,4 +1,4 @@
-use crate::error::NodeDBError;
+use crate::{bit_path::BitPath, error::NodeDBError};
 use async_trait::async_trait;
 use hashbrown::HashMap;
 use intmax2_zkp::utils::{leafable::Leafable, leafable_hasher::LeafableHasher};
@@ -19,8 +19,15 @@ pub struct Node<V: Leafable> {
 
 #[async_trait(?Send)]
 pub trait NodeDB<V: Leafable + Serialize + DeserializeOwned>: std::fmt::Debug + Clone {
-    async fn insert(&self, parent_hash: HashOut<V>, node: Node<V>) -> NodeDBResult<()>;
-    async fn get(&self, parent_hash: HashOut<V>) -> NodeDBResult<Option<Node<V>>>;
+    async fn insert_node(&self, parent_hash: HashOut<V>, node: Node<V>) -> NodeDBResult<()>;
+    async fn get_node(&self, parent_hash: HashOut<V>) -> NodeDBResult<Option<Node<V>>>;
+    async fn insert_current_node_hash(
+        &self,
+        bit_path: BitPath,
+        hash: HashOut<V>,
+    ) -> NodeDBResult<()>;
+    async fn get_current_node_hash(&self, bit_path: BitPath) -> NodeDBResult<Option<HashOut<V>>>;
+
     async fn insert_leaf_hash(&self, position: u64, leaf_hash: HashOut<V>) -> NodeDBResult<()>;
     async fn insert_leaf(&self, leaf: V) -> NodeDBResult<()>;
     async fn num_leaf_hashes(&self) -> NodeDBResult<u32>;
@@ -32,6 +39,7 @@ pub trait NodeDB<V: Leafable + Serialize + DeserializeOwned>: std::fmt::Debug + 
 
 #[derive(Clone, Debug)]
 pub struct MockNodeDB<V: Leafable> {
+    current_node_hashes: Arc<RwLock<HashMap<BitPath, HashOut<V>>>>,
     nodes: Arc<RwLock<HashMap<HashOut<V>, Node<V>>>>,
     leaf_hashes: Arc<RwLock<HashMap<u64, HashOut<V>>>>,
     leaves: Arc<RwLock<HashMap<HashOut<V>, V>>>,
@@ -40,6 +48,7 @@ pub struct MockNodeDB<V: Leafable> {
 impl<V: Leafable> MockNodeDB<V> {
     pub fn new() -> Self {
         MockNodeDB {
+            current_node_hashes: Arc::new(RwLock::new(HashMap::new())),
             nodes: Arc::new(RwLock::new(HashMap::new())),
             leaf_hashes: Arc::new(RwLock::new(HashMap::new())),
             leaves: Arc::new(RwLock::new(HashMap::new())),
@@ -49,13 +58,34 @@ impl<V: Leafable> MockNodeDB<V> {
 
 #[async_trait(?Send)]
 impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for MockNodeDB<V> {
-    async fn insert(&self, parent_hash: HashOut<V>, node: Node<V>) -> NodeDBResult<()> {
+    async fn insert_node(&self, parent_hash: HashOut<V>, node: Node<V>) -> NodeDBResult<()> {
         self.nodes.write().await.insert(parent_hash, node);
         Ok(())
     }
 
-    async fn get(&self, parent_hash: HashOut<V>) -> NodeDBResult<Option<Node<V>>> {
+    async fn get_node(&self, parent_hash: HashOut<V>) -> NodeDBResult<Option<Node<V>>> {
         Ok(self.nodes.read().await.get(&parent_hash).cloned())
+    }
+
+    async fn insert_current_node_hash(
+        &self,
+        bit_path: BitPath,
+        hash: HashOut<V>,
+    ) -> NodeDBResult<()> {
+        self.current_node_hashes
+            .write()
+            .await
+            .insert(bit_path, hash);
+        Ok(())
+    }
+
+    async fn get_current_node_hash(&self, bit_path: BitPath) -> NodeDBResult<Option<HashOut<V>>> {
+        Ok(self
+            .current_node_hashes
+            .read()
+            .await
+            .get(&bit_path)
+            .cloned())
     }
 
     async fn insert_leaf_hash(&self, position: u64, leaf_hash: HashOut<V>) -> NodeDBResult<()> {
@@ -120,7 +150,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlNodeDB<V> {
 
 #[async_trait(?Send)]
 impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
-    async fn insert(&self, parent_hash: HashOut<V>, node: Node<V>) -> NodeDBResult<()> {
+    async fn insert_node(&self, parent_hash: HashOut<V>, node: Node<V>) -> NodeDBResult<()> {
         let serialized_parent = bincode::serialize(&parent_hash)?;
         let serialized_left = bincode::serialize(&node.left_hash)?;
         let serialized_right = bincode::serialize(&node.right_hash)?;
@@ -142,7 +172,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
         Ok(())
     }
 
-    async fn get(&self, parent_hash: HashOut<V>) -> NodeDBResult<Option<Node<V>>> {
+    async fn get_node(&self, parent_hash: HashOut<V>) -> NodeDBResult<Option<Node<V>>> {
         let serialized_hash = bincode::serialize(&parent_hash)?;
 
         let row = sqlx::query!(
@@ -166,6 +196,56 @@ impl<V: Leafable + Serialize + DeserializeOwned> NodeDB<V> for SqlNodeDB<V> {
                     left_hash,
                     right_hash,
                 }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    // CREATE TABLE IF NOT EXISTS current_node_hashes (
+    //     tag int NOT NULL,
+    //     bit_path bytea PRIMARY KEY,
+    //     hash_value bytea NOT NULL
+    // );
+    async fn insert_current_node_hash(
+        &self,
+        bit_path: BitPath,
+        hash: HashOut<V>,
+    ) -> NodeDBResult<()> {
+        let serialized_bit_path = bincode::serialize(&bit_path)?;
+        let serialized_hash = bincode::serialize(&hash)?;
+        sqlx::query!(
+            r#"
+            INSERT INTO current_node_hashes (tag, bit_path, hash_value)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (bit_path) DO NOTHING
+            "#,
+            self.tag as i32,
+            serialized_bit_path as _,
+            serialized_hash as _
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_current_node_hash(&self, bit_path: BitPath) -> NodeDBResult<Option<HashOut<V>>> {
+        let serialized_bit_path = bincode::serialize(&bit_path)?;
+        let row = sqlx::query!(
+            r#"
+            SELECT hash_value
+            FROM current_node_hashes
+            WHERE bit_path = $1 AND tag = $2
+            "#,
+            serialized_bit_path as _,
+            self.tag as i32
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let hash = bincode::deserialize(&row.hash_value)?;
+                Ok(Some(hash))
             }
             None => Ok(None),
         }

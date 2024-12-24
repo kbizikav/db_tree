@@ -56,7 +56,7 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
             let new_h = Hasher::<V>::two_to_one(h, h);
             zero_hashes.push(new_h);
             node_db
-                .insert(
+                .insert_node(
                     new_h,
                     Node {
                         left_hash: h,
@@ -122,7 +122,7 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
                 left_hash: if b { sibling } else { h.clone() },
                 right_hash: if b { h.clone() } else { sibling },
             };
-            self.node_db.insert(new_h.clone(), node).await?;
+            self.node_db.insert_node(new_h.clone(), node).await?;
             h = new_h;
         }
         if update_db {
@@ -140,7 +140,7 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: NodeDB<V>> HistoricalMerkle
         let mut siblings = vec![];
         let mut hash = root;
         while !path.is_empty() {
-            let node = self.node_db.get(hash).await?.ok_or_else(|| {
+            let node = self.node_db.get_node(hash).await?.ok_or_else(|| {
                 HistoricalMerkleTreeError::NodeNotFoundError(format!("{:?}", hash))
             })?;
             let (child, sibling) = if path.pop().unwrap() {

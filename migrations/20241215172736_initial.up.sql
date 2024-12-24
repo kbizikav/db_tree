@@ -1,3 +1,9 @@
+CREATE TABLE IF NOT EXISTS current_node_hashes (
+    tag int NOT NULL,
+    bit_path bytea PRIMARY KEY,
+    hash_value bytea NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS hash_nodes (
     tag int NOT NULL,
     parent_hash bytea PRIMARY KEY,

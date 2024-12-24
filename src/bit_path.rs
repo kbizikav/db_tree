@@ -1,4 +1,6 @@
-#[derive(Default, Debug, Clone, Copy, Eq, PartialEq, Hash)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Default, Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct BitPath {
     length: u32,
     value: u64,
@@ -68,6 +70,14 @@ impl BitPath {
         path.value = path.value ^ (1 << last);
         path
     }
+
+    pub fn encode(&self) -> Vec<u8> {
+        bincode::serialize(self).unwrap()
+    }
+
+    pub fn decode(data: &[u8]) -> Self {
+        bincode::deserialize(data).unwrap()
+    }
 }
 
 #[cfg(test)]
@@ -110,5 +120,15 @@ mod tests {
         assert_eq!(path.is_empty(), true);
         assert_eq!(path.len(), 0);
         assert_eq!(path.value(), 0);
+    }
+
+    #[test]
+    fn test_bit_path_reverse() {
+        let path = BitPath::new(10, 5);
+        let encoded = path.encode();
+        let decoded = BitPath::decode(&encoded);
+        assert_eq!(decoded, path);
+
+        println!("{:?}", encoded.len());
     }
 }
