@@ -147,6 +147,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
             let leaf = self.get_leaf(timestamp, i as u64).await?;
             leaves.push((i as u64, leaf));
         }
+        leaves.sort_by_key(|(i, _)| *i);
         Ok(leaves)
     }
 
@@ -225,9 +226,9 @@ impl<V: Leafable + Serialize + DeserializeOwned> super::MerkleTreeClient<V> for 
         self.get_leaf(timestamp, position).await
     }
 
-    async fn get_leaves(&self, timestamp: u64) -> MTResult<Vec<HashOut<V>>> {
+    async fn get_leaves(&self, timestamp: u64) -> MTResult<Vec<V>> {
         let leaves = self.get_leaves(timestamp).await?;
-        Ok(leaves.into_iter().map(|(_, leaf)| leaf.hash()).collect())
+        Ok(leaves.into_iter().map(|(_, leaf)| leaf).collect())
     }
 
     async fn get_num_leaves(&self, timestamp: u64) -> MTResult<usize> {

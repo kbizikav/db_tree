@@ -21,7 +21,7 @@ pub trait MerkleTreeClient<V: Leafable + Serialize + DeserializeOwned>:
     async fn update_leaf(&self, timestamp: u64, position: u64, leaf: V) -> MTResult<()>;
     async fn get_root(&self, timestamp: u64) -> MTResult<HashOut<V>>;
     async fn get_leaf(&self, timestamp: u64, position: u64) -> MTResult<V>;
-    async fn get_leaves(&self, timestamp: u64) -> MTResult<Vec<HashOut<V>>>;
+    async fn get_leaves(&self, timestamp: u64) -> MTResult<Vec<V>>;
     async fn get_num_leaves(&self, timestamp: u64) -> MTResult<usize>;
     async fn prove(&self, timestamp: u64, position: u64) -> MTResult<MerkleProof<V>>;
     async fn reset(&self) -> MTResult<()>;

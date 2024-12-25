@@ -8,13 +8,6 @@ use intmax2_zkp::{
     },
 };
 
-use crate::{
-    error::HistoricalIndexedMerkleTreeError,
-    indexed_merkle_tree::{HIMTResult, HistoricalIndexedMerkleTree},
-    merkle_tree::HashOut,
-    node::NodeDB,
-};
-
 type V = IndexedMerkleLeaf;
 pub type HistoricalAccountTree<DB> = HistoricalIndexedMerkleTree<DB>;
 

@@ -1,3 +1,4 @@
+use hashbrown::HashMap;
 use intmax2_zkp::utils::leafable::Leafable;
 use intmax2_zkp::utils::leafable_hasher::LeafableHasher;
 use intmax2_zkp::utils::trees::merkle_tree::MerkleProof;
@@ -182,6 +183,8 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
     }
 
     async fn get_leaves(&self, timestamp: u64) -> MTResult<Vec<(u64, V)>> {
+        let mut tx = self.pool.begin().await?;
+        let num_leaves = self.get_num_leaves(&mut tx, timestamp).await?;
         let records = sqlx::query!(
             r#"
             WITH RankedLeaves AS (
@@ -205,15 +208,24 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
             "#,
             timestamp as i64
         )
-        .fetch_all(&self.pool)
+        .fetch_all(tx.as_mut())
         .await?;
+        tx.commit().await?;
 
-        let mut leaves = vec![];
+        let mut leaves = HashMap::new();
         for record in records {
             let position = record.position as u64;
             let leaf: V = bincode::deserialize(&record.leaf).unwrap();
-            leaves.push((position, leaf));
+            leaves.insert(position, leaf);
         }
+        for i in 0..num_leaves {
+            let i = i as u64;
+            if !leaves.contains_key(&i) {
+                leaves.insert(i, V::empty_leaf());
+            }
+        }
+        let mut leaves: Vec<(u64, V)> = leaves.into_iter().collect();
+        leaves.sort_by_key(|(i, _)| *i);
 
         Ok(leaves)
     }
@@ -360,9 +372,9 @@ impl<V: Leafable + Serialize + DeserializeOwned> MerkleTreeClient<V> for SqlMerk
         Ok(leaf)
     }
 
-    async fn get_leaves(&self, timestamp: u64) -> MTResult<Vec<HashOut<V>>> {
+    async fn get_leaves(&self, timestamp: u64) -> MTResult<Vec<V>> {
         let leaves = self.get_leaves(timestamp).await?;
-        Ok(leaves.into_iter().map(|(_, leaf)| leaf.hash()).collect())
+        Ok(leaves.into_iter().map(|(_, leaf)| leaf).collect())
     }
 
     async fn get_num_leaves(&self, timestamp: u64) -> MTResult<usize> {

@@ -17,11 +17,11 @@ pub struct HistoricalIncrementalMerkleTree<
 impl<V: Leafable + Serialize + DeserializeOwned, DB: MerkleTreeClient<V>>
     HistoricalIncrementalMerkleTree<V, DB>
 {
-    pub async fn new(merkle_tree: DB) -> MTResult<Self> {
-        Ok(HistoricalIncrementalMerkleTree {
+    pub fn new(merkle_tree: DB) -> Self {
+        HistoricalIncrementalMerkleTree {
             merkle_tree,
             _phantom: std::marker::PhantomData,
-        })
+        }
     }
 
     pub fn height(&self) -> usize {
@@ -49,9 +49,14 @@ impl<V: Leafable + Serialize + DeserializeOwned, DB: MerkleTreeClient<V>>
         Ok(root)
     }
 
-    pub async fn get_leaves(&self, timestamp: u64) -> MTResult<Vec<HashOut<V>>> {
+    pub async fn get_leaves(&self, timestamp: u64) -> MTResult<Vec<V>> {
         let leaves = self.merkle_tree.get_leaves(timestamp).await?;
         Ok(leaves)
+    }
+
+    pub async fn get_leaf(&self, timestamp: u64, index: u64) -> MTResult<V> {
+        let leaf = self.merkle_tree.get_leaf(timestamp, index).await?;
+        Ok(leaf)
     }
 
     pub async fn prove(&self, timestamp: u64, index: u64) -> MTResult<IncrementalMerkleProof<V>> {
@@ -78,7 +83,7 @@ mod tests {
         type V = u32;
         let merkle_db = SqlMerkleTree::<V>::new(&database_url, tag, height);
         merkle_db.reset().await?;
-        let tree = HistoricalIncrementalMerkleTree::new(merkle_db).await?;
+        let tree = HistoricalIncrementalMerkleTree::new(merkle_db);
 
         let timestamp = 0;
         for _ in 0..5 {

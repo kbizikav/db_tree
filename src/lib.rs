@@ -12,7 +12,7 @@ pub mod utils;
 // pub mod deposit_hash_tree;
 // pub mod error;
 
-// pub mod indexed_merkle_tree;
+pub mod indexed_merkle_tree;
 // pub mod merkle_tree;
 // pub mod node;
 
