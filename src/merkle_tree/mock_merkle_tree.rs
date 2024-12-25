@@ -55,7 +55,7 @@ impl<V: Leafable> MockMerkleTree<V> {
 }
 
 impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
-    pub async fn save_node(
+    async fn save_node(
         &self,
         timestamp: u64,
         bit_path: BitPath,
@@ -105,12 +105,20 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
             leaf_hash: leaf.hash(),
             leaf,
         };
+        let current_len = self.get_num_leaves_at_timestamp(timestamp).await?;
+        tracing::log::info!("current_len: {}", current_len);
+        let next_len = ((position + 1) as usize).max(current_len);
         self.leaves
             .write()
             .await
             .entry(position)
             .or_insert_with(Vec::new)
             .push(leaf);
+        self.leaves_len
+            .write()
+            .await
+            .entry(timestamp)
+            .insert_entry(next_len);
         Ok(())
     }
 
@@ -155,15 +163,15 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
         Ok(num_leaves)
     }
 
-    async fn get_latest_timestamp(&self) -> u64 {
-        let leaves_lens: Vec<(u64, usize)> =
-            self.leaves_len.read().await.clone().into_iter().collect();
-        let (ts, _) = leaves_lens
-            .into_iter()
-            .max_by_key(|(ts, _)| *ts)
-            .unwrap_or((0, 0));
-        ts
-    }
+    // async fn get_latest_timestamp(&self) -> u64 {
+    //     let leaves_lens: Vec<(u64, usize)> =
+    //         self.leaves_len.read().await.clone().into_iter().collect();
+    //     let (ts, _) = leaves_lens
+    //         .into_iter()
+    //         .max_by_key(|(ts, _)| *ts)
+    //         .unwrap_or((0, 0));
+    //     ts
+    // }
 
     async fn get_sibling_hash(&self, timestamp: u64, path: BitPath) -> MTResult<HashOut<V>> {
         if path.is_empty() {

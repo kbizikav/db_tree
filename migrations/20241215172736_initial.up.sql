@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS leaves_len (
 );
 
 CREATE TABLE IF NOT EXISTS indexed_merkle_leaves (
+    timestamp_value bigint NOT NULL,
     tag int NOT NULL,
     position bigint NOT NULL,
     leaf_hash bytea NOT NULL,
