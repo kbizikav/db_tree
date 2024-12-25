@@ -68,7 +68,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         Ok(())
     }
 
-    async fn get_node_hash_at_timestamp(
+    async fn get_node_hash(
         &self,
         tx: &mut sqlx::Transaction<'_, Postgres>,
         timestamp: u64,
@@ -114,7 +114,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         let leaf_hash = bincode::serialize(&leaf.hash()).unwrap();
         let leaf = bincode::serialize(&leaf).unwrap();
 
-        let current_len = self.get_num_leaves_at_timestamp(tx, timestamp).await?;
+        let current_len = self.get_num_leaves(tx, timestamp).await?;
         let next_len = ((position + 1) as usize).max(current_len);
 
         sqlx::query!(
@@ -149,7 +149,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         Ok(())
     }
 
-    pub async fn get_leaf_at_timestamp(
+    async fn get_leaf(
         &self,
         tx: &mut sqlx::Transaction<'_, Postgres>,
         timestamp: u64,
@@ -181,7 +181,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         }
     }
 
-    pub async fn get_leaves_at_timestamp(&self, timestamp: u64) -> MTResult<Vec<(u64, V)>> {
+    async fn get_leaves(&self, timestamp: u64) -> MTResult<Vec<(u64, V)>> {
         let records = sqlx::query!(
             r#"
             WITH RankedLeaves AS (
@@ -218,7 +218,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         Ok(leaves)
     }
 
-    pub async fn get_num_leaves_at_timestamp(
+    async fn get_num_leaves(
         &self,
         tx: &mut sqlx::Transaction<'_, Postgres>,
         timestamp: u64,
@@ -257,22 +257,20 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
             return Err(MerkleTreeError::WrongPathLength(0));
         }
         let sibling_path = path.sibling();
-        let sibling_hash = self
-            .get_node_hash_at_timestamp(tx, timestamp, sibling_path)
-            .await?;
+        let sibling_hash = self.get_node_hash(tx, timestamp, sibling_path).await?;
         Ok(sibling_hash)
     }
 
-    pub async fn get_root(&self, timestamp: u64) -> MTResult<HashOut<V>> {
+    async fn get_root(&self, timestamp: u64) -> MTResult<HashOut<V>> {
         let mut tx = self.pool.begin().await?;
         let root = self
-            .get_node_hash_at_timestamp(&mut tx, timestamp, BitPath::default())
+            .get_node_hash(&mut tx, timestamp, BitPath::default())
             .await?;
         tx.commit().await?;
         Ok(root)
     }
 
-    pub async fn update_leaf(&self, timestamp: u64, index: u64, leaf: V) -> super::MTResult<()> {
+    async fn update_leaf(&self, timestamp: u64, index: u64, leaf: V) -> super::MTResult<()> {
         let mut path = BitPath::new(self.height as u32, index);
         path.reverse();
         let mut h = leaf.hash();
@@ -294,7 +292,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         Ok(())
     }
 
-    pub async fn prove(&self, timestamp: u64, index: u64) -> MTResult<MerkleProof<V>> {
+    async fn prove(&self, timestamp: u64, index: u64) -> MTResult<MerkleProof<V>> {
         let mut path = BitPath::new(self.height as u32, index);
         path.reverse(); // path is big endian
         let mut siblings = vec![];
@@ -307,7 +305,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         Ok(MerkleProof { siblings })
     }
 
-    pub async fn reset(&self) -> MTResult<()> {
+    async fn reset(&self) -> MTResult<()> {
         sqlx::query!(
             r#"
             DELETE FROM hash_nodes
@@ -339,5 +337,46 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         .await?;
 
         Ok(())
+    }
+}
+
+use crate::merkle_tree::MerkleTreeClient;
+
+#[async_trait::async_trait(?Send)]
+impl<V: Leafable + Serialize + DeserializeOwned> MerkleTreeClient<V> for SqlMerkleTree<V> {
+    async fn update_leaf(&self, timestamp: u64, position: u64, leaf: V) -> MTResult<()> {
+        self.update_leaf(timestamp, position, leaf).await?;
+        Ok(())
+    }
+
+    async fn get_root(&self, timestamp: u64) -> MTResult<HashOut<V>> {
+        self.get_root(timestamp).await
+    }
+
+    async fn get_leaf(&self, timestamp: u64, position: u64) -> MTResult<V> {
+        let mut tx = self.pool.begin().await?;
+        let leaf = self.get_leaf(&mut tx, timestamp, position).await?;
+        tx.commit().await?;
+        Ok(leaf)
+    }
+
+    async fn get_leaves(&self, timestamp: u64) -> MTResult<Vec<HashOut<V>>> {
+        let leaves = self.get_leaves(timestamp).await?;
+        Ok(leaves.into_iter().map(|(_, leaf)| leaf.hash()).collect())
+    }
+
+    async fn get_num_leaves(&self, timestamp: u64) -> MTResult<usize> {
+        let mut tx = self.pool.begin().await?;
+        let len = self.get_num_leaves(&mut tx, timestamp).await?;
+        tx.commit().await?;
+        Ok(len)
+    }
+
+    async fn prove(&self, timestamp: u64, position: u64) -> MTResult<MerkleProof<V>> {
+        self.prove(timestamp, position).await
+    }
+
+    async fn reset(&self) -> MTResult<()> {
+        self.reset().await
     }
 }

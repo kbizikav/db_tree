@@ -33,7 +33,7 @@ pub struct MockMerkleTree<V: Leafable> {
     leaves_len: Arc<RwLock<HashMap<u64, usize>>>,                // timestamp -> num_leaves
 }
 
-impl<V: Leafable> MockMerkleTree<V> {
+impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
     pub fn new(height: usize) -> Self {
         let mut zero_hashes = vec![];
         let mut h = V::empty_leaf().hash();
@@ -52,9 +52,7 @@ impl<V: Leafable> MockMerkleTree<V> {
             leaves_len: Arc::new(RwLock::new(HashMap::new())),
         }
     }
-}
 
-impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
     async fn save_node(
         &self,
         timestamp: u64,
@@ -75,7 +73,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
         Ok(())
     }
 
-    async fn get_node_hash_at_timestamp(
+    async fn get_node_hash(
         &self,
         timestamp: u64,
         bit_path: BitPath,
@@ -98,14 +96,14 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
         Ok(node_hash)
     }
 
-    pub async fn save_leaf(&self, timestamp: u64, position: u64, leaf: V) -> super::MTResult<()> {
+    async fn save_leaf(&self, timestamp: u64, position: u64, leaf: V) -> super::MTResult<()> {
         let leaf = Leaf {
             timestamp_value: timestamp,
             position,
             leaf_hash: leaf.hash(),
             leaf,
         };
-        let current_len = self.get_num_leaves_at_timestamp(timestamp).await?;
+        let current_len = self.get_num_leaves(timestamp).await?;
         tracing::log::info!("current_len: {}", current_len);
         let next_len = ((position + 1) as usize).max(current_len);
         self.leaves
@@ -122,7 +120,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
         Ok(())
     }
 
-    pub async fn get_leaf_at_timestamp(&self, timestamp: u64, position: u64) -> super::MTResult<V> {
+    async fn get_leaf(&self, timestamp: u64, position: u64) -> super::MTResult<V> {
         let leaves = self
             .leaves
             .read()
@@ -142,17 +140,17 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
         Ok(leaf)
     }
 
-    pub async fn get_leaves_at_timestamp(&self, timestamp: u64) -> super::MTResult<Vec<(u64, V)>> {
-        let num_leaves = self.get_num_leaves_at_timestamp(timestamp).await?;
+    async fn get_leaves(&self, timestamp: u64) -> super::MTResult<Vec<(u64, V)>> {
+        let num_leaves = self.get_num_leaves(timestamp).await?;
         let mut leaves = vec![];
         for i in 0..num_leaves {
-            let leaf = self.get_leaf_at_timestamp(timestamp, i as u64).await?;
+            let leaf = self.get_leaf(timestamp, i as u64).await?;
             leaves.push((i as u64, leaf));
         }
         Ok(leaves)
     }
 
-    async fn get_num_leaves_at_timestamp(&self, timestamp: u64) -> super::MTResult<usize> {
+    async fn get_num_leaves(&self, timestamp: u64) -> super::MTResult<usize> {
         let leaves_lens: Vec<(u64, usize)> =
             self.leaves_len.read().await.clone().into_iter().collect();
         let (_ts, num_leaves) = leaves_lens
@@ -167,11 +165,10 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
         if path.is_empty() {
             return Err(MerkleTreeError::WrongPathLength(0));
         }
-        self.get_node_hash_at_timestamp(timestamp, path.sibling())
-            .await
+        self.get_node_hash(timestamp, path.sibling()).await
     }
 
-    pub async fn update_leaf(&self, timestamp: u64, index: u64, leaf: V) -> super::MTResult<()> {
+    async fn update_leaf(&self, timestamp: u64, index: u64, leaf: V) -> super::MTResult<()> {
         let mut path = BitPath::new(self.height as u32, index);
         path.reverse();
         let mut h = leaf.hash();
@@ -190,7 +187,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
         Ok(())
     }
 
-    pub async fn prove(&self, timestamp: u64, index: u64) -> super::MTResult<MerkleProof<V>> {
+    async fn prove(&self, timestamp: u64, index: u64) -> super::MTResult<MerkleProof<V>> {
         let mut path = BitPath::new(self.height as u32, index);
         path.reverse(); // path is big endian
         let mut siblings = vec![];
@@ -201,8 +198,47 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
         Ok(MerkleProof { siblings })
     }
 
-    pub async fn get_root(&self, timestamp: u64) -> MTResult<HashOut<V>> {
-        self.get_node_hash_at_timestamp(timestamp, BitPath::default())
-            .await
+    async fn get_root(&self, timestamp: u64) -> MTResult<HashOut<V>> {
+        self.get_node_hash(timestamp, BitPath::default()).await
+    }
+
+    async fn reset(&self) -> MTResult<()> {
+        self.hash_nodes.write().await.clear();
+        self.leaves.write().await.clear();
+        self.leaves_len.write().await.clear();
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl<V: Leafable + Serialize + DeserializeOwned> super::MerkleTreeClient<V> for MockMerkleTree<V> {
+    async fn update_leaf(&self, timestamp: u64, position: u64, leaf: V) -> MTResult<()> {
+        self.update_leaf(timestamp, position, leaf).await?;
+        Ok(())
+    }
+
+    async fn get_root(&self, timestamp: u64) -> MTResult<HashOut<V>> {
+        self.get_root(timestamp).await
+    }
+
+    async fn get_leaf(&self, timestamp: u64, position: u64) -> MTResult<V> {
+        self.get_leaf(timestamp, position).await
+    }
+
+    async fn get_leaves(&self, timestamp: u64) -> MTResult<Vec<HashOut<V>>> {
+        let leaves = self.get_leaves(timestamp).await?;
+        Ok(leaves.into_iter().map(|(_, leaf)| leaf.hash()).collect())
+    }
+
+    async fn get_num_leaves(&self, timestamp: u64) -> MTResult<usize> {
+        self.get_num_leaves(timestamp).await
+    }
+
+    async fn prove(&self, timestamp: u64, position: u64) -> MTResult<MerkleProof<V>> {
+        self.prove(timestamp, position).await
+    }
+
+    async fn reset(&self) -> MTResult<()> {
+        self.reset().await
     }
 }

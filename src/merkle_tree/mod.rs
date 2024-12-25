@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use error::MerkleTreeError;
-use intmax2_zkp::utils::{leafable::Leafable, leafable_hasher::LeafableHasher};
+use intmax2_zkp::utils::{
+    leafable::Leafable, leafable_hasher::LeafableHasher, trees::merkle_tree::MerkleProof,
+};
 use serde::{de::DeserializeOwned, Serialize};
-
-use crate::utils::bit_path::BitPath;
 
 pub mod error;
 pub mod mock_merkle_tree;
@@ -14,17 +14,16 @@ pub type HashOut<V> = <Hasher<V> as LeafableHasher>::HashOut;
 pub type MTResult<T> = std::result::Result<T, MerkleTreeError>;
 
 #[async_trait(?Send)]
-pub trait DBClient<V: Leafable + Serialize + DeserializeOwned>: std::fmt::Debug + Clone {
-    async fn save_node(&self, timestamp: u64, bit_path: BitPath, hash: HashOut<V>) -> MTResult<()>;
-    async fn get_node_at_timestamp(
-        &self,
-        timestamp: u64,
-        bit_path: BitPath,
-    ) -> MTResult<HashOut<V>>;
-    async fn save_leaf(&self, timestamp: u64, position: u64, leaf: V) -> MTResult<()>;
-    async fn get_leaf_at_timestamp(&self, timestamp: u64, position: u64) -> MTResult<V>;
-    async fn get_leaves_at_timestamp(&self, timestamp: u64) -> MTResult<Vec<(u64, V)>>;
-    async fn get_num_leaves_at_timestamp(&self, timestamp: u64) -> MTResult<usize>;
+pub trait MerkleTreeClient<V: Leafable + Serialize + DeserializeOwned>:
+    std::fmt::Debug + Clone
+{
+    async fn update_leaf(&self, timestamp: u64, position: u64, leaf: V) -> MTResult<()>;
+    async fn get_root(&self, timestamp: u64) -> MTResult<HashOut<V>>;
+    async fn get_leaf(&self, timestamp: u64, position: u64) -> MTResult<V>;
+    async fn get_leaves(&self, timestamp: u64) -> MTResult<Vec<HashOut<V>>>;
+    async fn get_num_leaves(&self, timestamp: u64) -> MTResult<usize>;
+    async fn prove(&self, timestamp: u64, position: u64) -> MTResult<MerkleProof<V>>;
+    async fn reset(&self) -> MTResult<()>;
 }
 
 #[cfg(test)]
@@ -32,6 +31,7 @@ mod tests {
     use crate::{merkle_tree::mock_merkle_tree::MockMerkleTree, setup_test};
 
     use super::sql_merkle_tree::SqlMerkleTree;
+    use crate::merkle_tree::MerkleTreeClient;
 
     type V = u32;
 
@@ -52,10 +52,11 @@ mod tests {
         }
         tree.update_leaf(timestamp, 3, 9).await?;
 
-        let leaves0_m = tree.get_leaves_at_timestamp(0).await?;
-        let leaves2_m = tree.get_leaves_at_timestamp(2).await?;
+        let leaves0_m = tree.get_leaves(0).await?;
+        let leaves2_m = tree.get_leaves(2).await?;
         let root0_m = tree.get_root(0).await?;
         let root2_m = tree.get_root(2).await?;
+        let proof2_m = tree.prove(2, 6).await?;
 
         let timestamp = 0;
         let tree = SqlMerkleTree::<V>::new(&database_url, 0, height);
@@ -70,21 +71,23 @@ mod tests {
         }
         tree.update_leaf(timestamp, 3, 9).await?;
 
-        let leaves0 = tree.get_leaves_at_timestamp(0).await?;
-        let leaves2 = tree.get_leaves_at_timestamp(2).await?;
+        let leaves0 = tree.get_leaves(0).await?;
+        let leaves2 = tree.get_leaves(2).await?;
         let root0 = tree.get_root(0).await?;
         let root2 = tree.get_root(2).await?;
+        let proof2 = tree.prove(2, 6).await?;
 
         assert_eq!(leaves0, leaves0_m);
         assert_eq!(leaves2, leaves2_m);
         assert_eq!(root0_m, root0);
         assert_eq!(root2, root2_m);
+        assert_eq!(proof2.siblings, proof2_m.siblings);
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_merkle_tree_speed() -> anyhow::Result<()> {
+    async fn test_speed_merkle_tree() -> anyhow::Result<()> {
         let height = 32;
         let n = 1 << 12;
 
