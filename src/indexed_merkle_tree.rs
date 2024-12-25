@@ -19,11 +19,6 @@ pub struct HistoricalIndexedMerkleTree<DB: MerkleTreeClient<V>>(
 );
 
 impl<DB: MerkleTreeClient<V>> HistoricalIndexedMerkleTree<DB> {
-    pub fn new(db: DB) -> Self {
-        let tree = HistoricalIncrementalMerkleTree::new(db);
-        Self(tree)
-    }
-
     pub async fn get_root(&self, timestamp: u64) -> Result<PoseidonHashOut> {
         let root = self.0.get_root(timestamp).await?;
         Ok(root)

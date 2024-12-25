@@ -6,7 +6,7 @@ use tracing_subscriber::{
 pub mod incremental_merkle_tree;
 pub mod merkle_tree;
 pub mod utils;
-// pub mod account_tree;
+pub mod account_tree;
 // pub mod bit_path;
 // pub mod block_tree;
 // pub mod deposit_hash_tree;

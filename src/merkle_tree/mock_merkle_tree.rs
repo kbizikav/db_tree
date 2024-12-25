@@ -209,6 +209,22 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
         self.leaves_len.write().await.clear();
         Ok(())
     }
+
+    async fn get_last_timestamp(&self) -> u64 {
+        let leaves = self.leaves.read().await.clone();
+        let last_timestamp = leaves
+            .iter()
+            .map(|(_, leaves)| {
+                leaves
+                    .iter()
+                    .map(|leaf| leaf.timestamp_value)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .max()
+            .unwrap_or(0);
+        last_timestamp
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -245,5 +261,9 @@ impl<V: Leafable + Serialize + DeserializeOwned> super::MerkleTreeClient<V> for 
 
     fn height(&self) -> usize {
         self.height
+    }
+
+    async fn get_last_timestamp(&self) -> MTResult<u64> {
+        Ok(self.get_last_timestamp().await)
     }
 }

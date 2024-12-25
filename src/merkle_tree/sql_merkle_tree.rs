@@ -350,6 +350,26 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
 
         Ok(())
     }
+
+    async fn get_last_timestamp(&self) -> u64 {
+        let record = sqlx::query!(
+            r#"
+            SELECT timestamp_value
+            FROM leaves
+            WHERE tag = $1
+            ORDER BY timestamp_value DESC
+            LIMIT 1
+            "#,
+            self.tag as i32
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .unwrap();
+        match record {
+            Some(row) => row.timestamp_value as u64,
+            None => 0,
+        }
+    }
 }
 
 use crate::merkle_tree::MerkleTreeClient;
@@ -394,5 +414,9 @@ impl<V: Leafable + Serialize + DeserializeOwned> MerkleTreeClient<V> for SqlMerk
 
     fn height(&self) -> usize {
         self.height
+    }
+
+    async fn get_last_timestamp(&self) -> MTResult<u64> {
+        Ok(self.get_last_timestamp().await)
     }
 }

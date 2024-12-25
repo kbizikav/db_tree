@@ -25,6 +25,7 @@ pub trait MerkleTreeClient<V: Leafable + Serialize + DeserializeOwned>:
     async fn get_num_leaves(&self, timestamp: u64) -> MTResult<usize>;
     async fn prove(&self, timestamp: u64, position: u64) -> MTResult<MerkleProof<V>>;
     async fn reset(&self) -> MTResult<()>;
+    async fn get_last_timestamp(&self) -> MTResult<u64>;
 }
 
 #[cfg(test)]
@@ -58,6 +59,7 @@ mod tests {
         let root0_m = tree.get_root(0).await?;
         let root2_m = tree.get_root(2).await?;
         let proof2_m = tree.prove(2, 6).await?;
+        let last_timestamp_m = tree.get_last_timestamp().await?;
 
         let timestamp = 0;
         let tree = SqlMerkleTree::<V>::new(&database_url, 0, height);
@@ -77,12 +79,14 @@ mod tests {
         let root0 = tree.get_root(0).await?;
         let root2 = tree.get_root(2).await?;
         let proof2 = tree.prove(2, 6).await?;
+        let timestamp = tree.get_last_timestamp().await?;
 
         assert_eq!(leaves0, leaves0_m);
         assert_eq!(leaves2, leaves2_m);
         assert_eq!(root0_m, root0);
         assert_eq!(root2, root2_m);
         assert_eq!(proof2.siblings, proof2_m.siblings);
+        assert_eq!(timestamp, last_timestamp_m);
 
         Ok(())
     }
