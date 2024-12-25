@@ -8,6 +8,7 @@ pub mod block_tree;
 pub mod deposit_hash_tree;
 pub mod incremental_merkle_tree;
 pub mod merkle_tree;
+pub mod update;
 pub mod utils;
 
 pub mod indexed_merkle_tree;
