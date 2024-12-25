@@ -4,6 +4,7 @@ use crate::{
 };
 use anyhow::Result;
 use intmax2_zkp::{
+    common::trees::account_tree::AccountMerkleProof,
     ethereum_types::u256::U256,
     utils::trees::indexed_merkle_tree::{
         insertion::IndexedInsertionProof, leaf::IndexedMerkleLeaf, membership::MembershipProof,
@@ -15,10 +16,21 @@ type V = IndexedMerkleLeaf;
 pub type HistoricalAccountTree<DB> = HistoricalIndexedMerkleTree<DB>;
 
 impl<DB: MerkleTreeClient<V>> HistoricalAccountTree<DB> {
-    pub fn new(db: DB) -> Self {
-        let tree = HistoricalIncrementalMerkleTree::new(db);
-        let tree = HistoricalIndexedMerkleTree(tree);
-        tree
+    pub async fn initialize(db: DB) -> Result<Self> {
+        let last_timestamp = db.get_last_timestamp().await?;
+        let tree = HistoricalIndexedMerkleTree(HistoricalIncrementalMerkleTree::new(db));
+        if last_timestamp == 0 {
+            if tree.len(last_timestamp).await? == 0 {
+                tree.0
+                    .push(last_timestamp, IndexedMerkleLeaf::default())
+                    .await?;
+            }
+            if tree.len(last_timestamp).await? == 1 {
+                tree.insert(last_timestamp, U256::dummy_pubkey(), 0).await?; // add default account
+            }
+        }
+
+        Ok(tree)
     }
 
     pub async fn prove_membership(&self, timestamp: u64, key: U256) -> Result<MembershipProof> {
@@ -42,7 +54,17 @@ impl<DB: MerkleTreeClient<V>> HistoricalAccountTree<DB> {
         }
     }
 
-    pub async fn insert(&mut self, timestamp: u64, key: U256, value: u64) -> Result<()> {
+    pub async fn prove_inclusion(
+        &self,
+        timestamp: u64,
+        account_id: u64,
+    ) -> Result<AccountMerkleProof> {
+        let leaf = self.get_leaf(timestamp, account_id).await?;
+        let merkle_proof = self.prove(timestamp, account_id).await?;
+        Ok(AccountMerkleProof { merkle_proof, leaf })
+    }
+
+    pub async fn insert(&self, timestamp: u64, key: U256, value: u64) -> Result<()> {
         let index = self.0.len(timestamp).await? as u64;
         let low_index = self.low_index(timestamp, key).await?;
         let prev_low_leaf = self.0.get_leaf(timestamp, low_index).await?;
@@ -119,44 +141,42 @@ impl<DB: MerkleTreeClient<V>> HistoricalAccountTree<DB> {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use intmax2_zkp::utils::trees::indexed_merkle_tree::leaf::IndexedMerkleLeaf;
+#[cfg(test)]
+mod tests {
+    use crate::merkle_tree::MerkleTreeClient;
+    use crate::{account_tree::HistoricalAccountTree, merkle_tree::sql_merkle_tree::SqlMerkleTree};
+    use intmax2_zkp::{
+        constants::ACCOUNT_TREE_HEIGHT, utils::trees::indexed_merkle_tree::leaf::IndexedMerkleLeaf,
+    };
 
-//     use crate::{
-//         account_tree::HistoricalAccountTree,
-//         node::{NodeDB as _, SqlNodeDB},
-//     };
+    #[tokio::test]
+    async fn test_account_tree() -> anyhow::Result<()> {
+        let database_url = crate::setup_test();
 
-//     #[tokio::test]
-//     async fn test_account_tree() -> anyhow::Result<()> {
-//         let database_url = crate::setup_test();
+        let tag = 3;
+        let db = SqlMerkleTree::<IndexedMerkleLeaf>::new(&database_url, tag, ACCOUNT_TREE_HEIGHT);
+        db.reset().await?;
+        let tree = HistoricalAccountTree::initialize(db).await?;
 
-//         let tag = 4;
-//         let node_db = SqlNodeDB::<IndexedMerkleLeaf>::new(&database_url, tag).await?;
-//         node_db.reset().await?;
-//         // let node_db = crate::node::MockNodeDB::new();
+        let timestamp0 = 0;
+        for i in 2..5 {
+            tree.insert(timestamp0, i.into(), i.into()).await?;
+        }
+        let old_root = tree.get_root(timestamp0).await?;
+        let old_leaves = tree.0.get_leaves(timestamp0).await?;
 
-//         let account_tree = HistoricalAccountTree::initialize(node_db).await?;
+        let timestamp1 = 1;
+        for i in 5..8 {
+            tree.insert(timestamp1, i.into(), i.into()).await?;
+        }
+        let leaves = tree.0.get_leaves(timestamp0).await?;
+        assert_eq!(leaves, old_leaves);
 
-//         for i in 2..5 {
-//             account_tree.insert(i.into(), i.into()).await?;
-//         }
-//         let old_root = account_tree.get_current_root().await?;
-//         let old_leaves = account_tree.get_current_leaves().await?;
-//         for i in 5..8 {
-//             account_tree.insert(i.into(), i.into()).await?;
-//         }
-//         let leaves = account_tree.get_leaves_by_root(old_root).await?;
-//         assert_eq!(leaves, old_leaves);
+        let account_id = 3;
+        let proof = tree.prove_inclusion(timestamp0, account_id).await?;
+        let result = proof.verify(old_root, account_id, (account_id as u32).into());
+        assert!(result);
 
-//         let account_id = 3;
-//         let proof = account_tree
-//             .prove_inclusion_by_root(old_root, account_id)
-//             .await?;
-//         let result = proof.verify(old_root, account_id, (account_id as u32).into());
-//         assert!(result);
-
-//         Ok(())
-//     }
-// }
+        Ok(())
+    }
+}
