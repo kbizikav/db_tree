@@ -1,30 +1,6 @@
-// CREATE TABLE IF NOT EXISTS hash_nodes (
-//     timestamp_value bigint NOT NULL,
-//     tag int NOT NULL,
-//     bit_path bytea NOT NULL,
-//     hash_value bytea NOT NULL,
-//     PRIMARY KEY (timestamp_value, tag, bit_path)
-// );
-
-// CREATE TABLE IF NOT EXISTS leaves (
-//     timestamp_value bigint NOT NULL,
-//     tag int NOT NULL,
-//     position bigint NOT NULL,
-//     leaf_hash bytea NOT NULL,
-//     leaf bytea NOT NULL,
-//     PRIMARY KEY (timestamp_value, tag, position)
-// );
-
-// CREATE TABLE IF NOT EXISTS leaves_len (
-//     timestamp_value bigint NOT NULL,
-//     tag int NOT NULL,
-//     len int NOT NULL,
-//     PRIMARY KEY (timestamp_value, tag)
-// );
-
+use intmax2_zkp::utils::leafable::Leafable;
 use intmax2_zkp::utils::leafable_hasher::LeafableHasher;
 use intmax2_zkp::utils::trees::merkle_tree::MerkleProof;
-use intmax2_zkp::{common::tx, utils::leafable::Leafable};
 use serde::{de::DeserializeOwned, Serialize};
 use sqlx::{Pool, Postgres};
 
@@ -37,11 +13,17 @@ pub struct SqlMerkleTree<V: Leafable + Serialize + DeserializeOwned> {
     tag: u32, // tag is used to distinguish between different trees in the same database
     height: usize,
     zero_hashes: Vec<HashOut<V>>,
+    pool: Pool<Postgres>,
     _phantom: std::marker::PhantomData<V>,
 }
 
 impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
-    pub fn new(tag: u32, height: usize) -> Self {
+    pub fn new(database_url: &str, tag: u32, height: usize) -> Self {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .connect_lazy(database_url)
+            .unwrap();
+
         let mut zero_hashes = vec![];
         let mut h = V::empty_leaf().hash();
         zero_hashes.push(h.clone());
@@ -52,6 +34,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         }
         zero_hashes.reverse();
         SqlMerkleTree {
+            pool,
             tag,
             height,
             zero_hashes,
@@ -91,7 +74,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         timestamp: u64,
         bit_path: BitPath,
     ) -> MTResult<HashOut<V>> {
-        let bit_path = bincode::serialize(&bit_path).unwrap();
+        let bit_path_serialized = bincode::serialize(&bit_path).unwrap();
         let record = sqlx::query!(
             r#"
         SELECT hash_value 
@@ -102,7 +85,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         ORDER BY timestamp_value DESC 
         LIMIT 1
         "#,
-            bit_path,
+            bit_path_serialized,
             timestamp as i64,
             self.tag as i32
         )
@@ -114,7 +97,10 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
                 let hash = bincode::deserialize(&row.hash_value).unwrap();
                 Ok(hash)
             }
-            None => Ok(self.zero_hashes[bit_path.len()]),
+            None => {
+                let hash = self.zero_hashes[bit_path.len() as usize];
+                Ok(hash)
+            }
         }
     }
 
@@ -195,11 +181,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         }
     }
 
-    pub async fn get_leaves_at_timestamp(
-        &self,
-        tx: &mut sqlx::Transaction<'_, Postgres>,
-        timestamp: u64,
-    ) -> MTResult<Vec<(u64, V)>> {
+    pub async fn get_leaves_at_timestamp(&self, timestamp: u64) -> MTResult<Vec<(u64, V)>> {
         let records = sqlx::query!(
             r#"
             WITH RankedLeaves AS (
@@ -223,7 +205,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
             "#,
             timestamp as i64
         )
-        .fetch_all(tx.as_mut())
+        .fetch_all(&self.pool)
         .await?;
 
         let mut leaves = vec![];
@@ -265,27 +247,6 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         }
     }
 
-    async fn get_latest_timestamp(&self, tx: &mut sqlx::Transaction<'_, Postgres>) -> u64 {
-        let record = sqlx::query!(
-            r#"
-            SELECT timestamp_value
-            FROM leaves_len
-            WHERE tag = $1
-            ORDER BY timestamp_value DESC
-            LIMIT 1
-            "#,
-            self.tag as i32
-        )
-        .fetch_optional(tx.as_mut())
-        .await
-        .unwrap();
-
-        match record {
-            Some(row) => row.timestamp_value as u64,
-            None => 0,
-        }
-    }
-
     async fn get_sibling_hash(
         &self,
         tx: &mut sqlx::Transaction<'_, Postgres>,
@@ -302,59 +263,51 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
         Ok(sibling_hash)
     }
 
-    pub async fn get_root(
-        &self,
-        tx: &mut sqlx::Transaction<'_, Postgres>,
-        timestamp: u64,
-    ) -> MTResult<HashOut<V>> {
-        self.get_node_hash_at_timestamp(tx, timestamp, BitPath::default())
-            .await
+    pub async fn get_root(&self, timestamp: u64) -> MTResult<HashOut<V>> {
+        let mut tx = self.pool.begin().await?;
+        let root = self
+            .get_node_hash_at_timestamp(&mut tx, timestamp, BitPath::default())
+            .await?;
+        tx.commit().await?;
+        Ok(root)
     }
 
-    pub async fn update_leaf(
-        &self,
-        tx: &mut sqlx::Transaction<'_, Postgres>,
-        timestamp: u64,
-        index: u64,
-        leaf: V,
-    ) -> super::MTResult<()> {
+    pub async fn update_leaf(&self, timestamp: u64, index: u64, leaf: V) -> super::MTResult<()> {
         let mut path = BitPath::new(self.height as u32, index);
         path.reverse();
         let mut h = leaf.hash();
 
-        self.save_leaf(tx, timestamp, index, leaf).await?;
+        let mut tx = self.pool.begin().await?;
+        self.save_leaf(&mut tx, timestamp, index, leaf).await?;
         while !path.is_empty() {
-            let sibling = self.get_sibling_hash(tx, timestamp, path).await?;
-            dbg!(&sibling);
+            let sibling = self.get_sibling_hash(&mut tx, timestamp, path).await?;
             let b = path.pop().unwrap(); // safe to unwrap
             let new_h = if b {
                 Hasher::<V>::two_to_one(sibling, h)
             } else {
                 Hasher::<V>::two_to_one(h, sibling)
             };
-            self.save_node(tx, timestamp, path, new_h).await?;
+            self.save_node(&mut tx, timestamp, path, new_h).await?;
             h = new_h;
         }
+        tx.commit().await?;
         Ok(())
     }
 
-    pub async fn prove(
-        &self,
-        tx: &mut sqlx::Transaction<'_, Postgres>,
-        timestamp: u64,
-        index: u64,
-    ) -> MTResult<MerkleProof<V>> {
+    pub async fn prove(&self, timestamp: u64, index: u64) -> MTResult<MerkleProof<V>> {
         let mut path = BitPath::new(self.height as u32, index);
         path.reverse(); // path is big endian
         let mut siblings = vec![];
+        let mut tx = self.pool.begin().await?;
         while !path.is_empty() {
-            siblings.push(self.get_sibling_hash(tx, timestamp, path).await?);
+            siblings.push(self.get_sibling_hash(&mut tx, timestamp, path).await?);
             path.pop();
         }
+        tx.commit().await?;
         Ok(MerkleProof { siblings })
     }
 
-    pub async fn reset(&self, tx: &mut sqlx::Transaction<'_, Postgres>) -> MTResult<()> {
+    pub async fn reset(&self) -> MTResult<()> {
         sqlx::query!(
             r#"
             DELETE FROM hash_nodes
@@ -362,7 +315,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
             "#,
             self.tag as i32
         )
-        .execute(tx.as_mut())
+        .execute(&self.pool)
         .await?;
 
         sqlx::query!(
@@ -372,7 +325,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
             "#,
             self.tag as i32
         )
-        .execute(tx.as_mut())
+        .execute(&self.pool)
         .await?;
 
         sqlx::query!(
@@ -382,7 +335,7 @@ impl<V: Leafable + Serialize + DeserializeOwned> SqlMerkleTree<V> {
             "#,
             self.tag as i32
         )
-        .execute(tx.as_mut())
+        .execute(&self.pool)
         .await?;
 
         Ok(())

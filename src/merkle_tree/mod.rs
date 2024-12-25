@@ -29,10 +29,6 @@ pub trait DBClient<V: Leafable + Serialize + DeserializeOwned>: std::fmt::Debug 
 
 #[cfg(test)]
 mod tests {
-    use core::time;
-
-    use sqlx::types::uuid::timestamp;
-
     use crate::{merkle_tree::mock_merkle_tree::MockMerkleTree, setup_test};
 
     use super::sql_merkle_tree::SqlMerkleTree;
@@ -46,55 +42,68 @@ mod tests {
         let height = 10;
         let tree = MockMerkleTree::<V>::new(height);
 
-        // let timestamp = 0;
-        // for i in 0..5 {
-        //     tree.update_leaf(timestamp, i, i as u32).await?;
-        // }
-        // let timestamp = 2;
-        // for i in 5..10 {
-        //     tree.update_leaf(timestamp, i, i as u32).await?;
-        // }
-        // let leaves0_m = tree.get_leaves_at_timestamp(0).await?;
-        // let leaves2_m = tree.get_leaves_at_timestamp(2).await?;
-        // let root_m = tree.get_root(2).await?;
+        let timestamp = 0;
+        for i in 0..5 {
+            tree.update_leaf(timestamp, i, i as u32).await?;
+        }
+        let timestamp = 2;
+        for i in 5..10 {
+            tree.update_leaf(timestamp, i, i as u32).await?;
+        }
+        tree.update_leaf(timestamp, 3, 9).await?;
 
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(5)
-            .connect(&database_url)
-            .await?;
+        let leaves0_m = tree.get_leaves_at_timestamp(0).await?;
+        let leaves2_m = tree.get_leaves_at_timestamp(2).await?;
+        let root0_m = tree.get_root(0).await?;
+        let root2_m = tree.get_root(2).await?;
 
         let timestamp = 0;
+        let tree = SqlMerkleTree::<V>::new(&database_url, 0, height);
+        tree.reset().await?;
 
-        let tree = SqlMerkleTree::<V>::new(0, height);
-        let mut tx = pool.begin().await?;
-        tree.reset(&mut tx).await?;
-        tx.commit().await?;
+        for i in 0..5 {
+            tree.update_leaf(timestamp, i, i as u32).await?;
+        }
+        let timestamp = 2;
+        for i in 5..10 {
+            tree.update_leaf(timestamp, i, i as u32).await?;
+        }
+        tree.update_leaf(timestamp, 3, 9).await?;
 
-        let mut tx = pool.begin().await?;
-        tree.update_leaf(&mut tx, timestamp, 0, 0 as u32).await?;
-        // let mut tx = pool.begin().await?;
-        // let mut tx = pool.begin().await?;
-        // for i in 0..1 {
-        //     tree.update_leaf(&mut tx, timestamp, i, i as u32).await?;
-        // }
-        // tx.commit().await?;
-        // let timestamp = 2;
+        let leaves0 = tree.get_leaves_at_timestamp(0).await?;
+        let leaves2 = tree.get_leaves_at_timestamp(2).await?;
+        let root0 = tree.get_root(0).await?;
+        let root2 = tree.get_root(2).await?;
 
-        // let mut tx = pool.begin().await?;
-        // for i in 5..10 {
-        //     tree.update_leaf(&mut tx, timestamp, i, i as u32).await?;
-        // }
-        // tx.commit().await?;
+        assert_eq!(leaves0, leaves0_m);
+        assert_eq!(leaves2, leaves2_m);
+        assert_eq!(root0_m, root0);
+        assert_eq!(root2, root2_m);
 
-        // let mut tx = pool.begin().await?;
-        // let leaves0 = tree.get_leaves_at_timestamp(&mut tx, 0).await?;
-        // let leaves2 = tree.get_leaves_at_timestamp(&mut tx, 2).await?;
-        // let root = tree.get_root(&mut tx, 2).await?;
-        // tx.commit().await?;
+        Ok(())
+    }
 
-        // assert_eq!(leaves0, leaves0_m);
-        // assert_eq!(leaves2, leaves2_m);
-        // assert_eq!(root, root_m);
+    #[tokio::test]
+    async fn test_merkle_tree_speed() -> anyhow::Result<()> {
+        let height = 32;
+        let n = 1 << 12;
+
+        let database_url = setup_test();
+        let tree = SqlMerkleTree::<V>::new(&database_url, 0, height);
+        tree.reset().await?;
+
+        let timestamp = 0;
+        let time = std::time::Instant::now();
+        for i in 0..n {
+            tree.update_leaf(timestamp, i, i as u32).await?;
+        }
+
+        println!(
+            "SqlMerkleTree: {} leaves, {} height, {} seconds",
+            n,
+            height,
+            time.elapsed().as_secs_f64()
+        );
 
         Ok(())
     }
