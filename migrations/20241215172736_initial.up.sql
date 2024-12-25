@@ -2,10 +2,8 @@ CREATE TABLE IF NOT EXISTS hash_nodes (
     timestamp_value bigint NOT NULL,
     tag int NOT NULL,
     bit_path bytea NOT NULL,
-    parent_hash bytea NOT NULL,
-    left_hash bytea NOT NULL,
-    right_hash bytea NOT NULL,
-    PRIMARY KEY (tag, bit_path, parent_hash)
+    hash_value bytea NOT NULL,
+    PRIMARY KEY (timestamp_value, tag, bit_path)
 );
 
 CREATE TABLE IF NOT EXISTS leaves (
@@ -14,7 +12,14 @@ CREATE TABLE IF NOT EXISTS leaves (
     position bigint NOT NULL,
     leaf_hash bytea NOT NULL,
     leaf bytea NOT NULL,
-    PRIMARY KEY (tag, position, leaf_hash)
+    PRIMARY KEY (timestamp_value, tag, position)
+);
+
+CREATE TABLE IF NOT EXISTS leaves_len (
+    timestamp_value bigint NOT NULL,
+    tag int NOT NULL,
+    len int NOT NULL,
+    PRIMARY KEY (timestamp_value, tag)
 );
 
 CREATE TABLE IF NOT EXISTS indexed_merkle_leaves (
@@ -25,12 +30,12 @@ CREATE TABLE IF NOT EXISTS indexed_merkle_leaves (
     key_value NUMERIC(78),
     next_key_value NUMERIC(78),
     value_value bigint,
-    PRIMARY KEY (tag, position, leaf_hash)
+    PRIMARY KEY (timestamp_value, tag, position)
 );
 
 CREATE TABLE IF NOT EXISTS root_history (
-    tag int NOT NULL,
     timestamp_value bigint NOT NULL,
+    tag int NOT NULL,
     root_value bytea NOT NULL,
     PRIMARY KEY (tag, timestamp_value)
 );

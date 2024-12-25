@@ -1,0 +1,210 @@
+use std::{collections::HashMap, sync::Arc};
+
+use intmax2_zkp::utils::leafable_hasher::LeafableHasher;
+use intmax2_zkp::utils::{leafable::Leafable, trees::merkle_tree::MerkleProof};
+use serde::{de::DeserializeOwned, Serialize};
+use tokio::sync::RwLock;
+
+use crate::utils::bit_path::BitPath;
+
+use super::{error::MerkleTreeError, HashOut, Hasher, MTResult};
+
+#[derive(Debug, Clone)]
+pub struct HashNode<V: Leafable> {
+    pub timestamp_value: u64,
+    pub bit_path: BitPath,
+    pub hash: HashOut<V>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Leaf<V: Leafable> {
+    pub timestamp_value: u64,
+    pub position: u64,
+    pub leaf_hash: HashOut<V>,
+    pub leaf: V,
+}
+
+#[derive(Debug, Clone)]
+pub struct MockMerkleTree<V: Leafable> {
+    height: usize,
+    zero_hashes: Vec<HashOut<V>>,
+    hash_nodes: Arc<RwLock<HashMap<BitPath, Vec<HashNode<V>>>>>, // bit_path -> hash_nodes
+    leaves: Arc<RwLock<HashMap<u64, Vec<Leaf<V>>>>>,             // position -> leaf
+    leaves_len: Arc<RwLock<HashMap<u64, usize>>>,                // timestamp -> num_leaves
+}
+
+impl<V: Leafable> MockMerkleTree<V> {
+    pub fn new(height: usize) -> Self {
+        let mut zero_hashes = vec![];
+        let mut h = V::empty_leaf().hash();
+        zero_hashes.push(h.clone());
+        for _ in 0..height {
+            let new_h = Hasher::<V>::two_to_one(h, h);
+            zero_hashes.push(new_h);
+            h = new_h;
+        }
+        zero_hashes.reverse();
+        MockMerkleTree {
+            height,
+            zero_hashes,
+            hash_nodes: Arc::new(RwLock::new(HashMap::new())),
+            leaves: Arc::new(RwLock::new(HashMap::new())),
+            leaves_len: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+
+impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
+    pub async fn save_node(
+        &self,
+        timestamp: u64,
+        bit_path: BitPath,
+        hash: HashOut<V>,
+    ) -> super::MTResult<()> {
+        let node = HashNode {
+            timestamp_value: timestamp,
+            bit_path,
+            hash,
+        };
+        self.hash_nodes
+            .write()
+            .await
+            .entry(bit_path)
+            .or_insert_with(Vec::new)
+            .push(node);
+        Ok(())
+    }
+
+    async fn get_node_hash_at_timestamp(
+        &self,
+        timestamp: u64,
+        bit_path: BitPath,
+    ) -> super::MTResult<HashOut<V>> {
+        let hash_nodes = self
+            .hash_nodes
+            .read()
+            .await
+            .get(&bit_path)
+            .cloned()
+            .unwrap_or_default();
+
+        // Get the latest one that exists at that time
+        let node_hash = hash_nodes
+            .iter()
+            .filter(|hash_node| hash_node.timestamp_value <= timestamp)
+            .max_by_key(|hash_node| hash_node.timestamp_value)
+            .map(|hash_node| hash_node.hash)
+            .unwrap_or(self.zero_hashes[bit_path.len() as usize]);
+        Ok(node_hash)
+    }
+
+    pub async fn save_leaf(&self, timestamp: u64, position: u64, leaf: V) -> super::MTResult<()> {
+        let leaf = Leaf {
+            timestamp_value: timestamp,
+            position,
+            leaf_hash: leaf.hash(),
+            leaf,
+        };
+        self.leaves
+            .write()
+            .await
+            .entry(position)
+            .or_insert_with(Vec::new)
+            .push(leaf);
+        Ok(())
+    }
+
+    pub async fn get_leaf_at_timestamp(&self, timestamp: u64, position: u64) -> super::MTResult<V> {
+        let leaves = self
+            .leaves
+            .read()
+            .await
+            .get(&position)
+            .cloned()
+            .unwrap_or_default();
+
+        // Get the latest one that exists at that time
+        let leaf = leaves
+            .iter()
+            .filter(|leaf| leaf.timestamp_value <= timestamp)
+            .max_by_key(|leaf| leaf.timestamp_value)
+            .map(|leaf| leaf.leaf.clone())
+            .unwrap_or(V::empty_leaf());
+
+        Ok(leaf)
+    }
+
+    pub async fn get_leaves_at_timestamp(&self, timestamp: u64) -> super::MTResult<Vec<(u64, V)>> {
+        let num_leaves = self.get_num_leaves_at_timestamp(timestamp).await?;
+        let mut leaves = vec![];
+        for i in 0..num_leaves {
+            let leaf = self.get_leaf_at_timestamp(timestamp, i as u64).await?;
+            leaves.push((i as u64, leaf));
+        }
+        Ok(leaves)
+    }
+
+    async fn get_num_leaves_at_timestamp(&self, timestamp: u64) -> super::MTResult<usize> {
+        let leaves_lens: Vec<(u64, usize)> =
+            self.leaves_len.read().await.clone().into_iter().collect();
+        let (_ts, num_leaves) = leaves_lens
+            .into_iter()
+            .filter(|(ts, _)| *ts <= timestamp)
+            .max_by_key(|(ts, _)| *ts)
+            .unwrap_or((0, 0));
+        Ok(num_leaves)
+    }
+
+    async fn get_latest_timestamp(&self) -> u64 {
+        let leaves_lens: Vec<(u64, usize)> =
+            self.leaves_len.read().await.clone().into_iter().collect();
+        let (ts, _) = leaves_lens
+            .into_iter()
+            .max_by_key(|(ts, _)| *ts)
+            .unwrap_or((0, 0));
+        ts
+    }
+
+    async fn get_sibling_hash(&self, timestamp: u64, path: BitPath) -> MTResult<HashOut<V>> {
+        if path.is_empty() {
+            return Err(MerkleTreeError::WrongPathLength(0));
+        }
+        self.get_node_hash_at_timestamp(timestamp, path.sibling())
+            .await
+    }
+
+    pub async fn update_leaf(&self, timestamp: u64, index: u64, leaf: V) -> super::MTResult<()> {
+        let mut path = BitPath::new(self.height as u32, index);
+        path.reverse();
+        let mut h = leaf.hash();
+        self.save_leaf(timestamp, index, leaf).await?;
+        while !path.is_empty() {
+            let sibling = self.get_sibling_hash(timestamp, path).await?;
+            let b = path.pop().unwrap(); // safe to unwrap
+            let new_h = if b {
+                Hasher::<V>::two_to_one(sibling, h)
+            } else {
+                Hasher::<V>::two_to_one(h, sibling)
+            };
+            self.save_node(timestamp, path, new_h).await?;
+            h = new_h;
+        }
+        Ok(())
+    }
+
+    pub async fn prove(&self, timestamp: u64, index: u64) -> super::MTResult<MerkleProof<V>> {
+        let mut path = BitPath::new(self.height as u32, index);
+        path.reverse(); // path is big endian
+        let mut siblings = vec![];
+        while !path.is_empty() {
+            siblings.push(self.get_sibling_hash(timestamp, path).await?);
+            path.pop();
+        }
+        Ok(MerkleProof { siblings })
+    }
+
+    pub async fn get_root(&self, timestamp: u64) -> MTResult<HashOut<V>> {
+        self.get_node_hash_at_timestamp(timestamp, BitPath::default())
+            .await
+    }
+}

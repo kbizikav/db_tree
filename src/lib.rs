@@ -3,7 +3,7 @@ use tracing_subscriber::{
     layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter, Layer as _,
 };
 
-pub mod db_client;
+pub mod merkle_tree;
 pub mod utils;
 // pub mod account_tree;
 // pub mod bit_path;
@@ -12,7 +12,7 @@ pub mod utils;
 // pub mod error;
 // pub mod incremental_merkle_tree;
 // pub mod indexed_merkle_tree;
-pub mod merkle_tree;
+// pub mod merkle_tree;
 // pub mod node;
 
 pub fn setup_test() -> String {
