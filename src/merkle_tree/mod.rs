@@ -17,6 +17,7 @@ pub type MTResult<T> = std::result::Result<T, MerkleTreeError>;
 pub trait MerkleTreeClient<V: Leafable + Serialize + DeserializeOwned>:
     std::fmt::Debug + Clone
 {
+    fn height(&self) -> usize;
     async fn update_leaf(&self, timestamp: u64, position: u64, leaf: V) -> MTResult<()>;
     async fn get_root(&self, timestamp: u64) -> MTResult<HashOut<V>>;
     async fn get_leaf(&self, timestamp: u64, position: u64) -> MTResult<V>;
@@ -100,12 +101,19 @@ mod tests {
         for i in 0..n {
             tree.update_leaf(timestamp, i, i as u32).await?;
         }
-
         println!(
             "SqlMerkleTree: {} leaves, {} height, {} seconds",
             n,
             height,
             time.elapsed().as_secs_f64()
+        );
+
+        let time = std::time::Instant::now();
+        let leaves = tree.get_leaves(timestamp).await?;
+        println!(
+            "time to get all {} leaves: {:?}",
+            leaves.len(),
+            time.elapsed()
         );
 
         Ok(())

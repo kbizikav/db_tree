@@ -379,4 +379,8 @@ impl<V: Leafable + Serialize + DeserializeOwned> MerkleTreeClient<V> for SqlMerk
     async fn reset(&self) -> MTResult<()> {
         self.reset().await
     }
+
+    fn height(&self) -> usize {
+        self.height
+    }
 }

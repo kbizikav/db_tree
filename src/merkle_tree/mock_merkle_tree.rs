@@ -241,4 +241,8 @@ impl<V: Leafable + Serialize + DeserializeOwned> super::MerkleTreeClient<V> for 
     async fn reset(&self) -> MTResult<()> {
         self.reset().await
     }
+
+    fn height(&self) -> usize {
+        self.height
+    }
 }
