@@ -6,6 +6,7 @@ use intmax2_zkp::utils::{
 use serde::{de::DeserializeOwned, Serialize};
 
 pub mod error;
+pub mod merkle_tree;
 pub mod mock_merkle_tree;
 pub mod sql_merkle_tree;
 
@@ -32,10 +33,28 @@ pub trait MerkleTreeClient<V: Leafable + Serialize + DeserializeOwned>:
 mod tests {
     use crate::{merkle_tree::mock_merkle_tree::MockMerkleTree, setup_test};
 
-    use super::sql_merkle_tree::SqlMerkleTree;
+    use super::{merkle_tree::MerkleTree, sql_merkle_tree::SqlMerkleTree};
     use crate::merkle_tree::MerkleTreeClient;
+    use intmax2_zkp::utils::{leafable::Leafable, trees::merkle_tree::u64_le_bits};
 
     type V = u32;
+
+    #[tokio::test]
+    async fn test_comparison_merkle_tree() -> anyhow::Result<()> {
+        let height = 2;
+        let timestamp = 0;
+
+        let leaf0 = 1u32;
+        let tree = MockMerkleTree::<V>::new(height);
+        tree.update_leaf(timestamp, 0, leaf0).await?;
+        dbg!(&tree);
+        let mut tree2 = MerkleTree::<V>::new(height, V::empty_leaf().hash());
+        let bits0 = u64_le_bits(0, height);
+        assert_eq!(bits0, vec![false, false]);
+        tree2.update_leaf(bits0, 1.hash());
+        dbg!(&tree2);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_merkle_tree() -> anyhow::Result<()> {

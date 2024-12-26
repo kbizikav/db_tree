@@ -73,6 +73,8 @@ mod tests {
         merkle_tree::sql_merkle_tree::SqlMerkleTree,
     };
 
+    
+
     #[tokio::test]
     async fn merkle_tree_with_leaves() -> anyhow::Result<()> {
         let height = 32;

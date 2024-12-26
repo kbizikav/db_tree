@@ -64,12 +64,27 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
             bit_path,
             hash,
         };
-        self.hash_nodes
-            .write()
+        let mut hash_nodes = self
+            .hash_nodes
+            .read()
             .await
-            .entry(bit_path)
-            .or_insert_with(Vec::new)
-            .push(node);
+            .get(&bit_path)
+            .cloned()
+            .unwrap_or_default();
+        let conflicting_index = hash_nodes
+            .iter()
+            .enumerate()
+            .find(|(_, hash_node)| {
+                hash_node.timestamp_value == timestamp && hash_node.bit_path == bit_path
+            })
+            .map(|(i, _)| i);
+        if conflicting_index.is_some() {
+            // replace the conflicting node
+            hash_nodes[conflicting_index.unwrap()] = node.clone();
+        } else {
+            hash_nodes.push(node.clone());
+        }
+        self.hash_nodes.write().await.insert(bit_path, hash_nodes);
         Ok(())
     }
 
@@ -166,7 +181,10 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
         if path.is_empty() {
             return Err(MerkleTreeError::WrongPathLength(0));
         }
-        self.get_node_hash(timestamp, path.sibling()).await
+        println!("sibling path: {:?}", path.sibling().to_bits_le());
+        let node_hash = self.get_node_hash(timestamp, path.sibling()).await?;
+        dbg!(&node_hash);
+        Ok(node_hash)
     }
 
     async fn update_leaf(&self, timestamp: u64, index: u64, leaf: V) -> super::MTResult<()> {
@@ -174,6 +192,8 @@ impl<V: Leafable + Serialize + DeserializeOwned> MockMerkleTree<V> {
         path.reverse();
         let mut h = leaf.hash();
         self.save_leaf(timestamp, index, leaf).await?;
+        self.save_node(timestamp, path, h).await?;
+
         while !path.is_empty() {
             let sibling = self.get_sibling_hash(timestamp, path).await?;
             let b = path.pop().unwrap(); // safe to unwrap

@@ -82,6 +82,8 @@ impl BitPath {
 
 #[cfg(test)]
 mod tests {
+    use intmax2_zkp::utils::trees::merkle_tree::u64_le_bits;
+
     use super::*;
 
     #[test]
@@ -130,5 +132,18 @@ mod tests {
         assert_eq!(decoded, path);
 
         println!("{:?}", encoded.len());
+    }
+
+    #[test]
+    fn test_comparison_bit_path() {
+        let height = 2;
+        let index = 1;
+
+        let path = BitPath::new(2, 1);
+        let bits = path.to_bits_le();
+
+        let bits2 = u64_le_bits(index, height);
+        dbg!(bits2.clone());
+        assert_eq!(bits, bits2);
     }
 }
